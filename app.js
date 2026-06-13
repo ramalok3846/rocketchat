@@ -15,11 +15,14 @@ class RocketLabApp {
         this.chartInstance = null;
         this.activeSimHtml = '';
         
-        // Firebase Cloud Firestore state
-        this.fs = null;
+        // Firebase Cloud Realtime Database state
+        this.fbRef = null;
         this.isFirebaseConnected = false;
-        this.fsUnsubscribers = [];
+        this.fbListeners = [];
         this.firebaseConfig = null;
+        this.defaultFirebaseConfig = {
+            databaseURL: "https://palrocketchat.asia-southeast1.firebasedatabase.app/"
+        };
         
         // Allowed Names for Registration
         this.allowedNames = ['윤은준', '하선효', '허단', '홍서준', '황인홍', '최준성'];
@@ -195,14 +198,27 @@ class RocketLabApp {
         this.checkSession();
         this.initTheme();
 
-        // Auto-connect to Firebase if configuration exists
+        // Auto-connect to Firebase
         const savedConfig = localStorage.getItem('rocket_firebase_config');
+        let configToUse = null;
         if (savedConfig) {
             try {
-                const config = JSON.parse(savedConfig);
-                await this.connectFirebase(config, true);
+                configToUse = JSON.parse(savedConfig);
             } catch (err) {
                 console.error("Failed to parse saved Firebase config:", err);
+            }
+        }
+        
+        // Fallback to default databaseURL config if no saved config exists
+        if (!configToUse && this.defaultFirebaseConfig && this.defaultFirebaseConfig.databaseURL) {
+            configToUse = this.defaultFirebaseConfig;
+        }
+
+        if (configToUse) {
+            try {
+                await this.connectFirebase(configToUse, true);
+            } catch (err) {
+                console.error("Failed to auto-connect to Firebase RTDB:", err);
             }
         }
     }
@@ -265,7 +281,7 @@ class RocketLabApp {
         });
     }
 
-    // FIREBASE FIRESTORE SYNC SYSTEM
+    // FIREBASE REALTIME DATABASE SYNC SYSTEM
     async connectFirebase(config, quiet = false) {
         const statusBadge = document.getElementById('sync-status-badge');
         const statusDot = document.getElementById('sync-status-dot');
@@ -285,7 +301,7 @@ class RocketLabApp {
                 fbApp = firebase.initializeApp(config);
             }
 
-            this.fs = fbApp.firestore();
+            this.fbRef = fbApp.database().ref();
             this.isFirebaseConnected = true;
             this.firebaseConfig = config;
             localStorage.setItem('rocket_firebase_config', JSON.stringify(config));
@@ -298,23 +314,24 @@ class RocketLabApp {
             }
 
             // Fill Form inputs in Admin panel if present
-            this.fillFirebaseConfigInputs(config);
+            const elUrl = document.getElementById('fb-database-url');
+            if (elUrl) elUrl.value = config.databaseURL || '';
 
-            // Establish real-time Firestore synchronization listeners
-            this.setupFirestoreListeners();
+            // Establish real-time RTDB listeners
+            this.setupRealtimeListeners();
 
-            // Auto Migration: check if Firestore is fresh, if so, export local DB to Firestore
-            this.fs.collection('users').limit(1).get().then(snapshot => {
-                if (snapshot.empty) {
-                    console.log("Firestore database is empty. Initiating local data migration...");
-                    this.migrateLocalToFirestore();
+            // Auto Migration: check if RTDB is fresh, if so, export local DB to RTDB
+            this.fbRef.child('users').limitToFirst(1).once('value').then(snapshot => {
+                if (!snapshot.exists()) {
+                    console.log("Firebase RTDB is empty. Initiating local data migration...");
+                    this.migrateLocalToFirebase();
                 }
             }).catch(err => {
-                console.error("Migration check failed (probably due to security rules):", err);
+                console.error("Migration check failed:", err);
             });
 
             if (!quiet) {
-                alert("☁️ Firebase Firestore 실시간 연동 성공!\n모든 데이터가 클라우드 실시간 동기화 모드로 전환되었습니다.");
+                alert("☁️ Firebase Realtime Database 실시간 연동 성공!\n모든 데이터가 클라우드 실시간 동기화 모드로 전환되었습니다.");
             }
 
         } catch (err) {
@@ -327,11 +344,15 @@ class RocketLabApp {
     }
 
     disconnectFirebase() {
-        // Unsubscribe all active listeners
-        this.fsUnsubscribers.forEach(unsub => unsub());
-        this.fsUnsubscribers = [];
+        // Clean listeners
+        if (this.fbListeners) {
+            this.fbListeners.forEach(listener => {
+                listener.ref.off(listener.event, listener.callback);
+            });
+        }
+        this.fbListeners = [];
 
-        this.fs = null;
+        this.fbRef = null;
         this.isFirebaseConnected = false;
         this.firebaseConfig = null;
         localStorage.removeItem('rocket_firebase_config');
@@ -348,11 +369,8 @@ class RocketLabApp {
         }
 
         // Clear Admin panel config inputs
-        const fields = ['fb-api-key', 'fb-auth-domain', 'fb-project-id', 'fb-storage-bucket', 'fb-messaging-sender-id', 'fb-app-id'];
-        fields.forEach(id => {
-            const el = document.getElementById(id);
-            if (el) el.value = '';
-        });
+        const elUrl = document.getElementById('fb-database-url');
+        if (elUrl) elUrl.value = '';
 
         // Re-render local data
         this.loadInitialData();
@@ -361,15 +379,25 @@ class RocketLabApp {
         }
     }
 
-    setupFirestoreListeners() {
+    setupRealtimeListeners() {
         // Clean existing listeners
-        this.fsUnsubscribers.forEach(unsub => unsub());
-        this.fsUnsubscribers = [];
+        if (this.fbListeners) {
+            this.fbListeners.forEach(listener => {
+                listener.ref.off(listener.event, listener.callback);
+            });
+        }
+        this.fbListeners = [];
+
+        const registerListener = (ref, event, callback) => {
+            ref.on(event, callback);
+            this.fbListeners.push({ ref, event, callback });
+        };
 
         // 1. Users Sync
-        const unsubUsers = this.fs.collection('users').onSnapshot(snapshot => {
-            const users = [];
-            snapshot.forEach(doc => users.push(doc.data()));
+        const usersRef = this.fbRef.child('users');
+        registerListener(usersRef, 'value', snapshot => {
+            const val = snapshot.val();
+            const users = val ? Object.values(val) : [];
             localStorage.setItem('rocket_users', JSON.stringify(users));
             if (this.activeTab === 'admin') this.renderAdminUsersList();
             
@@ -382,98 +410,117 @@ class RocketLabApp {
                     this.showMainApp();
                 }
             }
-        }, err => console.error("Users listener error:", err));
-        this.fsUnsubscribers.push(unsubUsers);
+        });
 
         // 2. Chat Messages Sync
-        const unsubMessages = this.fs.collection('messages').orderBy('timestamp', 'asc').onSnapshot(snapshot => {
+        const messagesRef = this.fbRef.child('messages');
+        registerListener(messagesRef, 'value', snapshot => {
+            const val = snapshot.val();
             const messages = [];
-            snapshot.forEach(doc => {
-                const m = doc.data();
-                m.id = doc.id; // overwrite id with doc.id for reliable deletion
-                messages.push(m);
-            });
+            if (val) {
+                Object.keys(val).forEach(key => {
+                    const m = val[key];
+                    m.id = key; // Use firebase push key as unique ID
+                    messages.push(m);
+                });
+            }
+            messages.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+            
             localStorage.setItem('rocket_messages', JSON.stringify(messages));
             if (this.activeTab === 'chat') {
                 this.renderChatMessages();
             }
-        }, err => console.error("Messages listener error:", err));
-        this.fsUnsubscribers.push(unsubMessages);
+        });
 
         // 3. Password Inquiry Requests Sync
-        const unsubRequests = this.fs.collection('pw_requests').orderBy('timestamp', 'desc').onSnapshot(snapshot => {
+        const requestsRef = this.fbRef.child('pw_requests');
+        registerListener(requestsRef, 'value', snapshot => {
+            const val = snapshot.val();
             const requests = [];
-            snapshot.forEach(doc => {
-                const r = doc.data();
-                r.id = doc.id;
-                requests.push(r);
-            });
+            if (val) {
+                Object.keys(val).forEach(key => {
+                    const r = val[key];
+                    r.id = key;
+                    requests.push(r);
+                });
+            }
+            requests.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
             localStorage.setItem('rocket_pw_requests', JSON.stringify(requests));
             if (this.activeTab === 'admin') {
                 this.renderAdminRequestsList();
             }
-        }, err => console.error("Requests listener error:", err));
-        this.fsUnsubscribers.push(unsubRequests);
+        });
 
         // 4. Collaborative Table Sync
-        const unsubTable = this.fs.collection('collaborative').doc('table').onSnapshot(doc => {
-            if (doc.exists()) {
-                const data = doc.data();
-                this.tableHeaders = data.headers;
-                this.tableData = data.rows;
-                localStorage.setItem('rocket_active_table', JSON.stringify(data));
-                if (this.activeTab === 'table') {
-                    this.renderTableTool();
+        const tableRef = this.fbRef.child('collaborative/table');
+        registerListener(tableRef, 'value', snapshot => {
+            const val = snapshot.val();
+            if (val) {
+                this.tableHeaders = val.headers || [];
+                this.tableData = val.rows || [];
+                localStorage.setItem('rocket_active_table', JSON.stringify(val));
+                
+                // Avoid resetting inputs if the user is actively typing in the table
+                const table = document.getElementById('drawing-table');
+                if (table && table.contains(document.activeElement)) {
+                    this.syncTableInputsFromData();
+                    this.drawTableChart();
+                } else {
+                    if (this.activeTab === 'table') {
+                        this.renderTableTool();
+                    }
                 }
             }
-        }, err => console.error("Table listener error:", err));
-        this.fsUnsubscribers.push(unsubTable);
+        });
 
         // 5. Collaborative Report Sync
-        const unsubReport = this.fs.collection('collaborative').doc('report').onSnapshot(doc => {
-            if (doc.exists()) {
-                const data = doc.data();
-                localStorage.setItem('rocket_active_report', data.content);
+        const reportRef = this.fbRef.child('collaborative/report');
+        registerListener(reportRef, 'value', snapshot => {
+            const val = snapshot.val();
+            if (val) {
+                localStorage.setItem('rocket_active_report', val.content || '');
                 const textarea = document.getElementById('report-editor-textarea');
                 if (textarea && document.activeElement !== textarea) {
-                    textarea.value = data.content;
+                    textarea.value = val.content || '';
                 }
                 if (this.activeTab === 'report') {
                     this.updateReportPreview();
                 }
             }
-        }, err => console.error("Report listener error:", err));
-        this.fsUnsubscribers.push(unsubReport);
+        });
 
         // 6. Collaborative Active Simulator Sync
-        const unsubSim = this.fs.collection('simulators').doc('active').onSnapshot(doc => {
-            if (doc.exists()) {
-                const data = doc.data();
+        const simRef = this.fbRef.child('simulators/active');
+        registerListener(simRef, 'value', snapshot => {
+            const val = snapshot.val();
+            if (val) {
                 const tx = this.db.transaction('simulators', 'readwrite');
-                tx.objectStore('simulators').put({ id: 'active', name: data.name, content: data.content }).onsuccess = () => {
+                tx.objectStore('simulators').put({ id: 'active', name: val.name, content: val.content }).onsuccess = () => {
                     if (this.activeTab === 'simulator') {
                         this.loadActiveSimulator();
                     }
                 };
             }
-        }, err => console.error("Simulator listener error:", err));
-        this.fsUnsubscribers.push(unsubSim);
+        });
 
         // 7. Virtual File Storage Sync
-        const unsubFiles = this.fs.collection('files').onSnapshot(snapshot => {
+        const filesRef = this.fbRef.child('files');
+        registerListener(filesRef, 'value', snapshot => {
+            const val = snapshot.val();
             const files = [];
-            snapshot.forEach(doc => {
-                const f = doc.data();
-                f.id = doc.id; // Override ID
-                files.push(f);
-            });
-            this.syncFirestoreFilesToIndexedDB(files);
-        }, err => console.error("Files listener error:", err));
-        this.fsUnsubscribers.push(unsubFiles);
+            if (val) {
+                Object.keys(val).forEach(key => {
+                    const f = val[key];
+                    f.id = key;
+                    files.push(f);
+                });
+            }
+            this.syncRealtimeFilesToIndexedDB(files);
+        });
     }
 
-    async syncFirestoreFilesToIndexedDB(fsFiles) {
-        // Clear IndexedDB virtualFiles store and repopulate with Firestore files
+    async syncRealtimeFilesToIndexedDB(fsFiles) {
         const tx = this.db.transaction('virtualFiles', 'readwrite');
         const store = tx.objectStore('virtualFiles');
         
@@ -502,33 +549,33 @@ class RocketLabApp {
         }
     }
 
-    async migrateLocalToFirestore() {
-        if (!this.isFirebaseConnected || !this.fs) return;
+    async migrateLocalToFirebase() {
+        if (!this.isFirebaseConnected || !this.fbRef) return;
 
-        console.log("Migrating users to Cloud Firestore...");
+        console.log("Migrating users to Firebase RTDB...");
         const users = JSON.parse(localStorage.getItem('rocket_users') || '[]');
         users.forEach(u => {
-            this.fs.collection('users').doc(u.id).set(u);
+            this.fbRef.child('users').child(u.id).set(u);
         });
 
-        console.log("Migrating messages to Cloud Firestore...");
+        console.log("Migrating messages to Firebase RTDB...");
         const messages = JSON.parse(localStorage.getItem('rocket_messages') || '[]');
         messages.forEach(m => {
-            this.fs.collection('messages').add(m);
+            this.fbRef.child('messages').push(m);
         });
 
-        console.log("Migrating PW recovery inquiries to Cloud Firestore...");
+        console.log("Migrating PW recovery inquiries to Firebase RTDB...");
         const requests = JSON.parse(localStorage.getItem('rocket_pw_requests') || '[]');
         requests.forEach(r => {
-            this.fs.collection('pw_requests').add(r);
+            this.fbRef.child('pw_requests').push(r);
         });
 
         console.log("Migrating collaborative table and reports...");
-        this.fs.collection('collaborative').doc('table').set({
+        this.fbRef.child('collaborative/table').set({
             headers: this.tableHeaders,
             rows: this.tableData
         });
-        this.fs.collection('collaborative').doc('report').set({
+        this.fbRef.child('collaborative/report').set({
             content: localStorage.getItem('rocket_active_report') || ''
         });
 
@@ -537,7 +584,7 @@ class RocketLabApp {
         txSim.objectStore('simulators').get('active').onsuccess = (e) => {
             const activeSim = e.target.result;
             if (activeSim) {
-                this.fs.collection('simulators').doc('active').set({
+                this.fbRef.child('simulators/active').set({
                     name: activeSim.name,
                     content: activeSim.content
                 });
@@ -545,17 +592,16 @@ class RocketLabApp {
         };
 
         // Migrate Virtual Files
-        console.log("Migrating virtual filesystem to Cloud Firestore...");
+        console.log("Migrating virtual filesystem to Firebase RTDB...");
         const txFiles = this.db.transaction('virtualFiles', 'readonly');
         txFiles.objectStore('virtualFiles').openCursor().onsuccess = (e) => {
             const cursor = e.target.result;
             if (cursor) {
                 const f = cursor.value;
-                // Firestore document size limit is 1MB. Warn if file is larger, upload if under.
                 if (f.size > 900 * 1024) {
-                    console.warn(`File '${f.name}' is too large to migrate to Firestore (limit 1MB).`);
+                    console.warn(`File '${f.name}' is too large to migrate (limit 1MB).`);
                 } else {
-                    this.fs.collection('files').add({
+                    this.fbRef.child('files').push({
                         localId: f.id,
                         path: f.path,
                         name: f.name,
@@ -570,76 +616,62 @@ class RocketLabApp {
         };
     }
 
-    fillFirebaseConfigInputs(config) {
-        const mappings = {
-            'fb-api-key': config.apiKey,
-            'fb-auth-domain': config.authDomain,
-            'fb-project-id': config.projectId,
-            'fb-storage-bucket': config.storageBucket,
-            'fb-messaging-sender-id': config.messagingSenderId,
-            'fb-app-id': config.appId
-        };
+    syncTableInputsFromData() {
+        const table = document.getElementById('drawing-table');
+        if (!table) return;
 
-        Object.keys(mappings).forEach(id => {
-            const el = document.getElementById(id);
-            if (el) el.value = mappings[id] || '';
+        // 1. Update headers
+        const headerInputs = table.querySelectorAll('thead input');
+        headerInputs.forEach((input, idx) => {
+            if (input !== document.activeElement && this.tableHeaders[idx] !== undefined) {
+                if (input.value !== this.tableHeaders[idx]) {
+                    input.value = this.tableHeaders[idx];
+                }
+            }
+        });
+
+        // 2. Update body cells
+        const rows = table.querySelectorAll('tbody tr');
+        rows.forEach((tr, rowIdx) => {
+            const inputs = tr.querySelectorAll('input');
+            inputs.forEach((input, colIdx) => {
+                if (input !== document.activeElement && this.tableData[rowIdx] && this.tableData[rowIdx][colIdx] !== undefined) {
+                    if (input.value !== this.tableData[rowIdx][colIdx]) {
+                        input.value = this.tableData[rowIdx][colIdx];
+                    }
+                }
+            });
         });
     }
 
     handleFirebaseConfigSubmit(e) {
         e.preventDefault();
-        const config = {
-            apiKey: document.getElementById('fb-api-key').value.trim(),
-            authDomain: document.getElementById('fb-auth-domain').value.trim(),
-            projectId: document.getElementById('fb-project-id').value.trim(),
-            storageBucket: document.getElementById('fb-storage-bucket').value.trim(),
-            messagingSenderId: document.getElementById('fb-messaging-sender-id').value.trim(),
-            appId: document.getElementById('fb-app-id').value.trim()
-        };
+        const url = document.getElementById('fb-database-url').value.trim();
 
-        if (Object.values(config).some(v => !v)) {
-            alert("❌ 모든 Firebase 연동 설정 항목을 작성해 주세요.");
+        if (!url) {
+            alert("❌ Firebase RTDB URL을 입력해 주세요.");
             return;
         }
 
+        const config = { databaseURL: url };
         this.connectFirebase(config);
     }
 
     loadDemoFirebaseConfig() {
         const demoConfig = {
-            apiKey: "AIzaSyFakeKey_RocketLabLinkDemo1234567",
-            authDomain: "rocketlab-link-demo.firebaseapp.com",
-            projectId: "rocketlab-link-demo",
-            storageBucket: "rocketlab-link-demo.appspot.com",
-            messagingSenderId: "123456789012",
-            appId: "1:123456789012:web:a1b2c3d4e5f6g7h8i9j0"
+            databaseURL: "https://palrocketchat.asia-southeast1.firebasedatabase.app/"
         };
-        this.fillFirebaseConfigInputs(demoConfig);
-        alert("📋 데모용 템플릿 정보가 입력되었습니다. 실서비스 이용 시에는 실제 프로젝트의 Config 값을 채우고 연동해 주세요.");
+        const elUrl = document.getElementById('fb-database-url');
+        if (elUrl) elUrl.value = demoConfig.databaseURL;
+        alert("📋 기본 RTDB 주소가 입력되었습니다. 실시간 동기화 시작 버튼을 눌러 연동할 수 있습니다.");
     }
 
     // Load initial config and database seeding
     loadInitialData() {
-        // 1. Seed Users if empty
+        // 1. Seed Users if empty (starts empty, users must sign up)
         let users = localStorage.getItem('rocket_users');
         if (!users) {
-            const initialUsers = [
-                { id: 'dan', name: '허단', pw: 'admin', role: 'ADMIN' },
-                { id: 'junseong', name: '최준성', pw: 'admin', role: 'ADMIN' },
-                { id: 'inhong', name: '황인홍', pw: 'admin', role: 'ADMIN' }
-            ];
-            localStorage.setItem('rocket_users', JSON.stringify(initialUsers));
-        } else {
-            // Self-repair: Ensure Hwang In-hong exists as ADMIN
-            const parsedUsers = JSON.parse(users);
-            const inhongIndex = parsedUsers.findIndex(u => u.name === '황인홍');
-            if (inhongIndex === -1) {
-                parsedUsers.push({ id: 'inhong', name: '황인홍', pw: 'admin', role: 'ADMIN' });
-                localStorage.setItem('rocket_users', JSON.stringify(parsedUsers));
-            } else if (parsedUsers[inhongIndex].role !== 'ADMIN') {
-                parsedUsers[inhongIndex].role = 'ADMIN';
-                localStorage.setItem('rocket_users', JSON.stringify(parsedUsers));
-            }
+            localStorage.setItem('rocket_users', JSON.stringify([]));
         }
 
         // 2. Seed Channels & Messages if empty
@@ -647,31 +679,13 @@ class RocketLabApp {
         if (!messages) {
             const initialMessages = [
                 {
-                    id: 1,
+                    id: "system_init",
                     channelId: 'notice',
                     senderName: '시스템',
                     senderId: 'system',
                     role: 'ADMIN',
                     content: '🚀 RocketLab Link 협업 채널이 개설되었습니다. 팀원 분들은 회원가입 후 로그인하여 사용해 주세요.',
                     timestamp: new Date(Date.now() - 3600000 * 2).toISOString()
-                },
-                {
-                    id: 2,
-                    channelId: 'notice',
-                    senderName: '허단',
-                    senderId: 'dan',
-                    role: 'ADMIN',
-                    content: '공지사항 채널은 관리자만 작성할 수 있습니다. 자유대화 채널에서 로켓 프로젝트에 대한 회의를 진행해 주세요.',
-                    timestamp: new Date(Date.now() - 3600000).toISOString()
-                },
-                {
-                    id: 3,
-                    channelId: 'general',
-                    senderName: '최준성',
-                    senderId: 'junseong',
-                    role: 'ADMIN',
-                    content: '안녕하세요! 대화 앱 테스트용으로 우선 가상의 대화 몇 개를 남겨 놓습니다.',
-                    timestamp: new Date(Date.now() - 1800000).toISOString()
                 }
             ];
             localStorage.setItem('rocket_messages', JSON.stringify(initialMessages));
@@ -854,7 +868,7 @@ class RocketLabApp {
 
         // 1. Verify Name matches target list
         if (!this.allowedNames.includes(nameInput)) {
-            alert(`❌ 회원가입 실패:\n실명이 영재원 로켓 프로젝트 등록 명단에 포함되어 있지 않습니다.\n(가입 가능 명단: ${this.allowedNames.join(', ')})`);
+            alert('❌ 회원가입 실패:\n영재원 로켓 프로젝트 등록 명단에 없는 실명입니다.');
             return;
         }
 
@@ -887,11 +901,11 @@ class RocketLabApp {
             this.toggleAuthView('login');
         };
 
-        if (this.isFirebaseConnected && this.fs) {
-            this.fs.collection('users').doc(newUser.id).set(newUser)
+        if (this.isFirebaseConnected && this.fbRef) {
+            this.fbRef.child('users').child(newUser.id).set(newUser)
                 .then(() => completeSignup())
                 .catch(err => {
-                    console.error("Firestore registration error:", err);
+                    console.error("Firebase RTDB registration error:", err);
                     alert("❌ 실시간 클라우드 가입 실패. 인터넷 연결을 확인해 주세요.");
                 });
         } else {
@@ -940,11 +954,11 @@ class RocketLabApp {
             this.closeForgotModal();
         };
 
-        if (this.isFirebaseConnected && this.fs) {
-            this.fs.collection('pw_requests').add(newReq)
+        if (this.isFirebaseConnected && this.fbRef) {
+            this.fbRef.child('pw_requests').push(newReq)
                 .then(() => completeForgot())
                 .catch(err => {
-                    console.error("Firestore request error:", err);
+                    console.error("Firebase RTDB request error:", err);
                     alert("❌ 실시간 대시보드 접수 실패. 이메일 아이콘 메일발송 버튼을 이용해 주세요.");
                 });
         } else {
@@ -1250,9 +1264,9 @@ class RocketLabApp {
             attachment: this.activeChatAttachment
         };
 
-        if (this.isFirebaseConnected && this.fs) {
-            this.fs.collection('messages').add(newMsg).catch(err => {
-                console.error("Firestore send error:", err);
+        if (this.isFirebaseConnected && this.fbRef) {
+            this.fbRef.child('messages').push(newMsg).catch(err => {
+                console.error("Firebase RTDB send error:", err);
                 const messages = JSON.parse(localStorage.getItem('rocket_messages') || '[]');
                 newMsg.id = Date.now() + '';
                 messages.push(newMsg);
@@ -1317,9 +1331,9 @@ class RocketLabApp {
     handleDeleteMessage(id) {
         if (!confirm('메시지를 완전히 삭제하시겠습니까?')) return;
         
-        if (this.isFirebaseConnected && this.fs) {
-            this.fs.collection('messages').doc(id).delete().catch(err => {
-                console.error("Firestore delete error:", err);
+        if (this.isFirebaseConnected && this.fbRef) {
+            this.fbRef.child('messages').child(id).remove().catch(err => {
+                console.error("Firebase RTDB delete error:", err);
                 let messages = JSON.parse(localStorage.getItem('rocket_messages') || '[]');
                 messages = messages.filter(m => m.id !== id);
                 localStorage.setItem('rocket_messages', JSON.stringify(messages));
@@ -1399,11 +1413,11 @@ class RocketLabApp {
             rows: this.tableData
         }));
 
-        if (this.isFirebaseConnected && this.fs) {
-            this.fs.collection('collaborative').doc('table').set({
+        if (this.isFirebaseConnected && this.fbRef) {
+            this.fbRef.child('collaborative/table').set({
                 headers: this.tableHeaders,
                 rows: this.tableData
-            }).catch(err => console.error("Firestore table save error:", err));
+            }).catch(err => console.error("Firebase RTDB table save error:", err));
         }
     }
 
@@ -1588,11 +1602,11 @@ class RocketLabApp {
         // Save draft
         localStorage.setItem('rocket_active_report', md);
 
-        if (this.isFirebaseConnected && this.fs) {
+        if (this.isFirebaseConnected && this.fbRef) {
             if (document.activeElement === textarea) {
-                this.fs.collection('collaborative').doc('report').set({
+                this.fbRef.child('collaborative/report').set({
                     content: md
-                }).catch(err => console.error("Firestore report save error:", err));
+                }).catch(err => console.error("Firebase RTDB report save error:", err));
             }
         }
 
@@ -1760,13 +1774,13 @@ class RocketLabApp {
             const tx = this.db.transaction('simulators', 'readwrite');
             const store = tx.objectStore('simulators');
             store.put({ id: 'active', name: file.name, content: html }).onsuccess = () => {
-                if (this.isFirebaseConnected && this.fs) {
-                    this.fs.collection('simulators').doc('active').set({
+                if (this.isFirebaseConnected && this.fbRef) {
+                    this.fbRef.child('simulators/active').set({
                         name: file.name,
                         content: html
                     }).then(() => completeUpload())
                       .catch(err => {
-                          console.error("Firestore simulator sync error:", err);
+                          console.error("Firebase RTDB simulator sync error:", err);
                           completeUpload();
                       });
                 } else {
@@ -1782,12 +1796,12 @@ class RocketLabApp {
         const tx = this.db.transaction('simulators', 'readwrite');
         const store = tx.objectStore('simulators');
         store.delete('active').onsuccess = () => {
-            if (this.isFirebaseConnected && this.fs) {
-                this.fs.collection('simulators').doc('active').delete().then(() => {
+            if (this.isFirebaseConnected && this.fbRef) {
+                this.fbRef.child('simulators/active').remove().then(() => {
                     this.loadActiveSimulator();
                     alert('🔄 기본 3D 정밀 시뮬레이터로 복원되었습니다.');
                 }).catch(err => {
-                    console.error("Firestore simulator delete error:", err);
+                    console.error("Firebase RTDB simulator delete error:", err);
                     this.loadActiveSimulator();
                     alert('🔄 기본 3D 정밀 시뮬레이터로 복원되었습니다.');
                 });
@@ -1965,10 +1979,10 @@ class RocketLabApp {
             localId: Date.now()
         };
 
-        if (this.isFirebaseConnected && this.fs) {
-            this.fs.collection('files').add(newFolder).then(() => {
+        if (this.isFirebaseConnected && this.fbRef) {
+            this.fbRef.child('files').push(newFolder).then(() => {
                 this.closeNewFolderModal();
-            }).catch(err => console.error("Firestore folder create error:", err));
+            }).catch(err => console.error("Firebase RTDB folder create error:", err));
         } else {
             const tx = this.db.transaction('virtualFiles', 'readwrite');
             const store = tx.objectStore('virtualFiles');
@@ -1993,12 +2007,12 @@ class RocketLabApp {
             
         if (!confirm(msg)) return;
 
-        if (this.isFirebaseConnected && this.fs) {
-            this.fs.collection('files').where('localId', '==', id).get().then(snapshot => {
-                snapshot.forEach(doc => {
-                    doc.ref.delete().catch(err => console.error("Firestore file delete error:", err));
+        if (this.isFirebaseConnected && this.fbRef) {
+            this.fbRef.child('files').orderByChild('localId').equalTo(id).once('value').then(snapshot => {
+                snapshot.forEach(child => {
+                    child.ref.remove().catch(err => console.error("Firebase RTDB file delete error:", err));
                 });
-            }).catch(err => console.error("Firestore query error:", err));
+            }).catch(err => console.error("Firebase RTDB query error:", err));
         } else {
             const tx = this.db.transaction('virtualFiles', 'readwrite');
             const store = tx.objectStore('virtualFiles');
@@ -2026,16 +2040,16 @@ class RocketLabApp {
                         localId: Date.now() + Math.floor(Math.random() * 100)
                     };
 
-                    if (this.isFirebaseConnected && this.fs) {
+                    if (this.isFirebaseConnected && this.fbRef) {
                         if (file.size > 900 * 1024) {
                             alert(`파일 '${file.name}'의 크기가 너무 큽니다 (최대 1MB 동기화 제한).`);
                             resolve();
                             return;
                         }
-                        this.fs.collection('files').add(fileObj)
+                        this.fbRef.child('files').push(fileObj)
                             .then(() => resolve())
                             .catch(err => {
-                                console.error("Firestore file upload error:", err);
+                                console.error("Firebase RTDB file upload error:", err);
                                 resolve();
                             });
                     } else {
@@ -2084,9 +2098,9 @@ class RocketLabApp {
                         const folderName = pathParts[i];
                         const checkPath = currentVirtualSubpath;
 
-                        if (this.isFirebaseConnected && this.fs) {
+                        if (this.isFirebaseConnected && this.fbRef) {
                             const folderId = `folder_${checkPath.replace(/\//g, '_')}_${folderName}`;
-                            await this.fs.collection('files').doc(folderId).set({
+                            await this.fbRef.child('files').child(folderId).set({
                                 path: checkPath,
                                 name: folderName,
                                 isFolder: true,
@@ -2094,7 +2108,7 @@ class RocketLabApp {
                                 type: '',
                                 content: '',
                                 localId: Date.now() + i
-                            }).catch(err => console.error("Firestore folder sync error:", err));
+                            }).catch(err => console.error("Firebase RTDB folder sync error:", err));
                         } else {
                             const txCheck = this.db.transaction('virtualFiles', 'readwrite');
                             const storeCheck = txCheck.objectStore('virtualFiles');
@@ -2133,13 +2147,13 @@ class RocketLabApp {
                 buildFolders().then(() => {
                     const reader = new FileReader();
                     reader.onload = (evt) => {
-                        if (this.isFirebaseConnected && this.fs) {
+                        if (this.isFirebaseConnected && this.fbRef) {
                             if (file.size > 900 * 1024) {
                                 alert(`파일 '${file.name}'의 크기가 너무 큽니다 (최대 1MB 동기화 제한).`);
                                 resolve();
                                 return;
                             }
-                            this.fs.collection('files').add({
+                            this.fbRef.child('files').push({
                                 path: currentVirtualSubpath,
                                 name: file.name,
                                 isFolder: false,
@@ -2149,7 +2163,7 @@ class RocketLabApp {
                                 localId: Date.now() + Math.floor(Math.random() * 1000)
                             }).then(() => resolve())
                               .catch(err => {
-                                  console.error("Firestore folder-file upload error:", err);
+                                  console.error("Firebase RTDB folder-file upload error:", err);
                                   resolve();
                               });
                         } else {
@@ -2373,6 +2387,10 @@ class RocketLabApp {
             u.pw = newPw;
             localStorage.setItem('rocket_users', JSON.stringify(users));
             alert(`🔑 @${id} 의 비밀번호가 변경되었습니다.`);
+
+            if (this.isFirebaseConnected && this.fbRef) {
+                this.fbRef.child('users').child(id).set(u);
+            }
         }
     }
 
@@ -2390,6 +2408,10 @@ class RocketLabApp {
                 localStorage.setItem('rocket_session', JSON.stringify(this.currentUser));
                 this.showMainApp();
             }
+
+            if (this.isFirebaseConnected && this.fbRef) {
+                this.fbRef.child('users').child(id).set(u);
+            }
         }
     }
 
@@ -2405,7 +2427,13 @@ class RocketLabApp {
         users = users.filter(u => u.id !== id);
         localStorage.setItem('rocket_users', JSON.stringify(users));
 
-        this.renderAdminUsersList();
+        if (this.isFirebaseConnected && this.fbRef) {
+            this.fbRef.child('users').child(id).remove().then(() => {
+                this.renderAdminUsersList();
+            });
+        } else {
+            this.renderAdminUsersList();
+        }
     }
 
     renderAdminRequestsList() {
@@ -2464,6 +2492,13 @@ class RocketLabApp {
                 matched.forEach(u => u.pw = '1234');
                 localStorage.setItem('rocket_users', JSON.stringify(users));
                 alert(`🔑 '${r.name}' 팀원의 가입된 계정 비밀번호가 임시 비밀번호 '1234'로 초기화되었습니다.`);
+
+                // Write updated users back to RTDB
+                if (this.isFirebaseConnected && this.fbRef) {
+                    matched.forEach(u => {
+                        this.fbRef.child('users').child(u.id).set(u);
+                    });
+                }
             } else {
                 alert(`실명이 '${r.name}'인 사용자가 가입되어 있지 않습니다. 가입 후 처리해 주세요.`);
                 return;
@@ -2473,6 +2508,10 @@ class RocketLabApp {
         // Mark request as RESOLVED
         r.status = 'RESOLVED';
         localStorage.setItem('rocket_pw_requests', JSON.stringify(requests));
+
+        if (this.isFirebaseConnected && this.fbRef) {
+            this.fbRef.child('pw_requests').child(reqId).child('status').set('RESOLVED');
+        }
         
         this.renderAdminRequestsList();
         this.renderAdminUsersList();
@@ -2589,24 +2628,37 @@ class RocketLabApp {
             return;
         }
 
-        // Clear LocalStorage
-        localStorage.removeItem('rocket_session');
-        localStorage.removeItem('rocket_users');
-        localStorage.removeItem('rocket_messages');
-        localStorage.removeItem('rocket_pw_requests');
-        localStorage.removeItem('rocket_active_table');
-        localStorage.removeItem('rocket_active_report');
-        localStorage.removeItem('rocket_theme');
+        const completeReset = () => {
+            // Clear LocalStorage
+            localStorage.removeItem('rocket_session');
+            localStorage.removeItem('rocket_users');
+            localStorage.removeItem('rocket_messages');
+            localStorage.removeItem('rocket_pw_requests');
+            localStorage.removeItem('rocket_active_table');
+            localStorage.removeItem('rocket_active_report');
+            localStorage.removeItem('rocket_theme');
 
-        // Clear IndexedDB stores
-        const tx1 = this.db.transaction('virtualFiles', 'readwrite');
-        tx1.objectStore('virtualFiles').clear();
+            // Clear IndexedDB stores
+            const tx1 = this.db.transaction('virtualFiles', 'readwrite');
+            tx1.objectStore('virtualFiles').clear();
 
-        const tx2 = this.db.transaction('simulators', 'readwrite');
-        tx2.objectStore('simulators').clear();
+            const tx2 = this.db.transaction('simulators', 'readwrite');
+            tx2.objectStore('simulators').clear();
 
-        alert('💥 데이터베이스가 완전 초기화되었습니다. 페이지를 새로고침하여 시스템을 재시작합니다.');
-        window.location.reload();
+            alert('💥 데이터베이스가 완전 초기화되었습니다. 페이지를 새로고침하여 시스템을 재시작합니다.');
+            window.location.reload();
+        };
+
+        if (this.isFirebaseConnected && this.fbRef) {
+            this.fbRef.remove()
+                .then(() => completeReset())
+                .catch(err => {
+                    console.error("Firebase RTDB reset error:", err);
+                    completeReset();
+                });
+        } else {
+            completeReset();
+        }
     }
 }
 
