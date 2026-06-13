@@ -316,3 +316,152 @@ body.light-theme #drawing-table td {
         display: block !important;
     }
 }
+
+/* ==========================================
+   PREMIUM LIGHT MODE CSS OVERRIDES
+   ========================================== */
+body.light-theme {
+    background-color: #f3f4f6 !important; /* bg-gray-100 */
+    color: #1f2937 !important; /* text-gray-800 */
+}
+
+/* Background overrides */
+body.light-theme .bg-space-900,
+body.light-theme .bg-space-950,
+body.light-theme .bg-slate-900,
+body.light-theme .bg-slate-950,
+body.light-theme .bg-slate-800,
+body.light-theme .bg-slate-850 {
+    background-color: #ffffff !important;
+}
+
+body.light-theme .bg-space-950\/40,
+body.light-theme .bg-space-950\/60,
+body.light-theme .bg-slate-900\/80,
+body.light-theme .bg-slate-900\/40,
+body.light-theme .bg-slate-900\/30,
+body.light-theme .bg-slate-800\/40,
+body.light-theme .bg-slate-850\/40,
+body.light-theme .bg-slate-950\/60,
+body.light-theme .bg-slate-950\/40,
+body.light-theme .bg-slate-950\/20,
+body.light-theme .bg-slate-950\/80 {
+    background-color: rgba(243, 244, 246, 0.8) !important;
+}
+
+body.light-theme .bg-slate-900,
+body.light-theme .bg-slate-950,
+body.light-theme .bg-slate-950\/60 {
+    background-color: #f9fafb !important;
+}
+
+/* Border overrides */
+body.light-theme .border-slate-800,
+body.light-theme .border-slate-700,
+body.light-theme .border-slate-850,
+body.light-theme .border-slate-900,
+body.light-theme .border-slate-850\/30,
+body.light-theme .border-slate-800\/40,
+body.light-theme .border-slate-800\/60,
+body.light-theme .border-slate-800\/80,
+body.light-theme .border-slate-700\/50 {
+    border-color: #e5e7eb !important;
+}
+
+/* Text overrides */
+body.light-theme .text-slate-100,
+body.light-theme .text-slate-200,
+body.light-theme .text-slate-300,
+body.light-theme .text-white {
+    color: #1f2937 !important;
+}
+
+body.light-theme .text-slate-400,
+body.light-theme .text-slate-500 {
+    color: #4b5563 !important;
+}
+
+body.light-theme .text-slate-600 {
+    color: #6b7280 !important;
+}
+
+/* Header & Sidebar overrides for premium Light Mode */
+body.light-theme header {
+    background-color: #ffffff !important;
+    border-bottom: 1px solid #e5e7eb !important;
+}
+
+body.light-theme aside {
+    background-color: #f9fafb !important;
+    border-right: 1px solid #e5e7eb !important;
+}
+
+/* Glass panel light mode override */
+body.light-theme .glass-panel {
+    background: rgba(255, 255, 255, 0.8) !important;
+    backdrop-filter: blur(16px);
+    border: 1px solid rgba(0, 0, 0, 0.08) !important;
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.05) !important;
+}
+
+/* Modals & Popups light mode override */
+body.light-theme #forgot-modal > div,
+body.light-theme #preview-modal > div,
+body.light-theme #new-folder-modal > div,
+body.light-theme #auth-overlay > div,
+body.light-theme #message-modal > div,
+body.light-theme #message-box,
+body.light-theme #read-status-popup-modal > div {
+    background-color: #ffffff !important;
+    border-color: #e5e7eb !important;
+    color: #1f2937 !important;
+    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04) !important;
+}
+
+/* Table light mode override */
+body.light-theme #drawing-table input {
+    background-color: #ffffff !important;
+    color: #1f2937 !important;
+    border-color: #d1d5db !important;
+}
+
+body.light-theme #drawing-table th {
+    background-color: #f3f4f6 !important;
+    color: #1f2937 !important;
+}
+
+/* Report editor override */
+body.light-theme #report-editor-textarea {
+    background-color: #ffffff !important;
+    color: #1f2937 !important;
+    border-color: #e5e7eb !important;
+}
+
+/* Chat bubble styling for light mode */
+body.light-theme .bg-slate-900.border.border-slate-800 {
+    background-color: #f3f4f6 !important;
+    border-color: #e5e7eb !important;
+    color: #1f2937 !important;
+}
+
+/* Chat input styling */
+body.light-theme #chat-message-input {
+    background-color: #ffffff !important;
+    color: #1f2937 !important;
+    border-color: #d1d5db !important;
+}
+
+body.light-theme #chat-send-form {
+    background-color: #ffffff !important;
+    border-top: 1px solid #e5e7eb !important;
+}
+
+/* Inactive nav/channel buttons in light theme */
+body.light-theme .hover\:bg-slate-800\/40:hover,
+body.light-theme .hover\:bg-slate-850\/60:hover {
+    background-color: #e5e7eb !important;
+}
+
+body.light-theme .text-slate-400.hover\:text-slate-200:hover {
+    color: #1f2937 !important;
+}

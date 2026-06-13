@@ -15,6 +15,13 @@ class RocketLabApp {
         this.chartInstance = null;
         this.activeSimHtml = '';
         
+        // Virtual File Explorer Clipboard
+        this.clipboardItem = null;
+        this.clipboardAction = null;
+        
+        // Chat send submit lock
+        this.isSendingMessage = false;
+        
         // Firebase Cloud Realtime Database state
         this.fbRef = null;
         this.isFirebaseConnected = false;
@@ -1030,6 +1037,9 @@ class RocketLabApp {
                 localStorage.setItem('rocket_theme', 'light');
                 themeBtn.innerHTML = '<i class="fa-solid fa-sun text-amber-500"></i>';
             }
+            if (this.activeTab === 'table') {
+                this.drawTableChart();
+            }
         };
     }
 
@@ -1267,24 +1277,25 @@ class RocketLabApp {
 
             if (unreadCount > 0) {
                 const unreadBadge = document.createElement('span');
-                unreadBadge.className = 'text-amber-400 font-bold font-mono text-[10px] leading-none mb-0.5';
+                unreadBadge.className = 'text-amber-400 font-bold font-mono text-[10px] leading-none mb-0.5 cursor-pointer hover:underline';
                 unreadBadge.innerText = unreadCount;
-                unreadBadge.title = `읽은 사람 (${readNames.length}명): ${readerNamesText || '없음'}\n안 읽은 사람 (${unreadNames.length}명): ${unreadNamesText || '없음'}`;
+                unreadBadge.title = '클릭하여 읽은 사람 확인';
+                unreadBadge.onclick = () => this.showReadStatus(m.id);
                 statusCol.appendChild(unreadBadge);
-            }
-
-            if (readNames.length > 0) {
-                const readersLabel = document.createElement('span');
-                readersLabel.className = 'text-[9px] text-slate-500 cursor-help leading-none mb-1 max-w-[90px] truncate';
-                readersLabel.innerText = readNames.join(',');
-                readersLabel.title = `읽은 사람 (${readNames.length}명): ${readerNamesText || '없음'}\n안 읽은 사람 (${unreadNames.length}명): ${unreadNamesText || '없음'}`;
-                statusCol.appendChild(readersLabel);
+            } else {
+                const readBadge = document.createElement('span');
+                readBadge.className = 'text-slate-600 text-[9px] font-semibold leading-none mb-0.5 cursor-pointer hover:underline';
+                readBadge.innerText = '읽음';
+                readBadge.title = '클릭하여 읽은 사람 확인';
+                readBadge.onclick = () => this.showReadStatus(m.id);
+                statusCol.appendChild(readBadge);
             }
 
             const timeLabel = document.createElement('span');
-            timeLabel.className = 'text-[9px] text-slate-500 font-mono scale-90 origin-bottom leading-none';
+            timeLabel.className = 'text-[9px] text-slate-500 font-mono scale-90 origin-bottom leading-none cursor-pointer hover:text-slate-400 transition-colors';
             timeLabel.innerText = new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-            timeLabel.title = `읽은 사람 (${readNames.length}명): ${readerNamesText || '없음'}\n안 읽은 사람 (${unreadNames.length}명): ${unreadNamesText || '없음'}`;
+            timeLabel.title = '클릭하여 읽은 사람 확인';
+            timeLabel.onclick = () => this.showReadStatus(m.id);
             statusCol.appendChild(timeLabel);
 
             // Row containing the bubble and the statusCol
@@ -1308,8 +1319,79 @@ class RocketLabApp {
         container.scrollTop = container.scrollHeight;
     }
 
+    showReadStatus(messageId) {
+        const allMessages = JSON.parse(localStorage.getItem('rocket_messages') || '[]');
+        const m = allMessages.find(msg => msg.id === messageId);
+        if (!m) return;
+
+        const users = JSON.parse(localStorage.getItem('rocket_users') || '[]');
+        const readBy = m.readBy || {};
+        
+        const readNames = [];
+        const unreadNames = [];
+        users.forEach(u => {
+            if (readBy[u.id]) {
+                readNames.push(`${u.name} (@${u.id})`);
+            } else {
+                unreadNames.push(`${u.name} (@${u.id})`);
+            }
+        });
+
+        const modalId = 'read-status-popup-modal';
+        let modal = document.getElementById(modalId);
+        if (!modal) {
+            modal = document.createElement('div');
+            modal.id = modalId;
+            modal.className = 'fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4';
+            document.body.appendChild(modal);
+        }
+
+        const isLightTheme = document.body.classList.contains('light-theme');
+        const bgClass = isLightTheme ? 'bg-white text-slate-800' : 'bg-slate-900 text-slate-100 border border-slate-700/60';
+        
+        modal.innerHTML = `
+            <div class="${bgClass} p-6 rounded-2xl shadow-2xl max-w-sm w-full relative overflow-hidden transition-all transform scale-100">
+                <div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-500 to-indigo-500"></div>
+                <h3 class="text-sm font-bold mb-4 flex items-center gap-2">
+                    <i class="fa-solid fa-circle-info text-blue-500"></i>
+                    <span>대화 읽음 현황</span>
+                </h3>
+                
+                <div class="space-y-4 max-h-[60vh] overflow-y-auto pr-1">
+                    <div>
+                        <div class="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-1.5 flex justify-between">
+                            <span>읽은 사람</span>
+                            <span class="text-blue-400 font-semibold font-mono">${readNames.length}명</span>
+                        </div>
+                        <div class="bg-slate-950/20 p-2.5 rounded-lg border border-slate-800/20 space-y-1">
+                            ${readNames.length > 0 
+                                ? readNames.map(name => `<div class="text-xs flex items-center gap-1.5"><i class="fa-solid fa-check text-[10px] text-emerald-400"></i> <span>${name}</span></div>`).join('') 
+                                : '<div class="text-xs text-slate-500">읽은 사람이 없습니다.</div>'}
+                        </div>
+                    </div>
+                    
+                    <div>
+                        <div class="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-1.5 flex justify-between">
+                            <span>안 읽은 사람</span>
+                            <span class="text-amber-400 font-semibold font-mono">${unreadNames.length}명</span>
+                        </div>
+                        <div class="bg-slate-950/20 p-2.5 rounded-lg border border-slate-800/20 space-y-1">
+                            ${unreadNames.length > 0 
+                                ? unreadNames.map(name => `<div class="text-xs flex items-center gap-1.5"><i class="fa-solid fa-minus text-[10px] text-amber-400/80"></i> <span>${name}</span></div>`).join('') 
+                                : '<div class="text-xs text-slate-500">모두 읽었습니다!</div>'}
+                        </div>
+                    </div>
+                </div>
+                
+                <button onclick="document.getElementById('${modalId}').remove()" class="mt-5 w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 rounded-xl text-xs shadow-lg shadow-blue-500/20 transition-all">확인</button>
+            </div>
+        `;
+    }
+
     handleSendMessage(e) {
         if (e) e.preventDefault();
+        
+        if (this.isSendingMessage) return;
         
         const content = this.chatInput.value.trim();
         const hasAttachment = this.activeChatAttachment !== null;
@@ -1323,6 +1405,15 @@ class RocketLabApp {
             return;
         }
 
+        this.isSendingMessage = true;
+
+        // Find and disable submit button to prevent click spamming
+        const submitBtn = this.chatForm.querySelector('button[type="submit"]');
+        if (submitBtn) {
+            submitBtn.disabled = true;
+            submitBtn.classList.add('opacity-50', 'cursor-not-allowed');
+        }
+
         const newMsg = {
             channelId: this.currentChannelId,
             senderName: this.currentUser.name,
@@ -1330,29 +1421,45 @@ class RocketLabApp {
             role: this.currentUser.role,
             content: content,
             timestamp: new Date().toISOString(),
-            attachment: this.activeChatAttachment
+            attachment: this.activeChatAttachment,
+            readBy: { [this.currentUser.id]: true }
+        };
+
+        // Clear input and attachment state immediately to give fast feedback and prevent double clicks
+        this.chatInput.value = '';
+        this.cancelChatAttachment();
+
+        const unlock = () => {
+            // Debounce unlocking for 500ms to guarantee no double-send on extremely fast responses
+            setTimeout(() => {
+                this.isSendingMessage = false;
+                if (submitBtn) {
+                    submitBtn.disabled = false;
+                    submitBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+                }
+            }, 500);
         };
 
         if (this.isFirebaseConnected && this.fbRef) {
-            this.fbRef.child('messages').push(newMsg).catch(err => {
-                console.error("Firebase RTDB send error:", err);
-                const messages = JSON.parse(localStorage.getItem('rocket_messages') || '[]');
-                newMsg.id = Date.now() + '';
-                messages.push(newMsg);
-                localStorage.setItem('rocket_messages', JSON.stringify(messages));
-                this.renderChatMessages();
-            });
+            this.fbRef.child('messages').push(newMsg)
+                .then(() => unlock())
+                .catch(err => {
+                    console.error("Firebase RTDB send error:", err);
+                    const messages = JSON.parse(localStorage.getItem('rocket_messages') || '[]');
+                    newMsg.id = Date.now() + '';
+                    messages.push(newMsg);
+                    localStorage.setItem('rocket_messages', JSON.stringify(messages));
+                    this.renderChatMessages();
+                    unlock();
+                });
         } else {
             const messages = JSON.parse(localStorage.getItem('rocket_messages') || '[]');
             newMsg.id = Date.now() + '';
             messages.push(newMsg);
             localStorage.setItem('rocket_messages', JSON.stringify(messages));
             this.renderChatMessages();
+            unlock();
         }
-
-        // Clear input and attachment state
-        this.chatInput.value = '';
-        this.cancelChatAttachment();
     }
 
     triggerChatAttachment() {
@@ -2003,15 +2110,55 @@ class RocketLabApp {
                 </div>
             `;
 
-            // Delete action button on hover
+            // Action buttons on hover capsule
+            const actionContainer = document.createElement('div');
+            actionContainer.className = "absolute right-2 top-2 flex gap-1 opacity-0 group-hover:opacity-100 transition z-10 bg-slate-950/90 p-1 rounded-lg border border-slate-800 shadow-xl";
+            
+            // Cut button
+            const cutBtn = document.createElement('button');
+            cutBtn.className = "w-5 h-5 rounded hover:bg-blue-500/20 flex items-center justify-center text-slate-400 hover:text-blue-400 transition";
+            cutBtn.innerHTML = '<i class="fa-solid fa-scissors text-[9px]"></i>';
+            cutBtn.title = '잘라내기 (Cut)';
+            cutBtn.onclick = (evt) => {
+                evt.stopPropagation();
+                this.cutStorageItem(item);
+            };
+            actionContainer.appendChild(cutBtn);
+
+            // Copy button
+            const copyBtn = document.createElement('button');
+            copyBtn.className = "w-5 h-5 rounded hover:bg-indigo-500/20 flex items-center justify-center text-slate-400 hover:text-indigo-400 transition";
+            copyBtn.innerHTML = '<i class="fa-regular fa-copy text-[9px]"></i>';
+            copyBtn.title = '복사 (Copy)';
+            copyBtn.onclick = (evt) => {
+                evt.stopPropagation();
+                this.copyStorageItem(item);
+            };
+            actionContainer.appendChild(copyBtn);
+
+            // Duplicate button
+            const dupBtn = document.createElement('button');
+            dupBtn.className = "w-5 h-5 rounded hover:bg-emerald-500/20 flex items-center justify-center text-slate-400 hover:text-emerald-400 transition";
+            dupBtn.innerHTML = '<i class="fa-solid fa-clone text-[9px]"></i>';
+            dupBtn.title = '복제 (Duplicate)';
+            dupBtn.onclick = (evt) => {
+                evt.stopPropagation();
+                this.duplicateStorageItem(item);
+            };
+            actionContainer.appendChild(dupBtn);
+
+            // Delete button
             const delBtn = document.createElement('button');
-            delBtn.className = "absolute right-2 top-2 w-5 h-5 rounded hover:bg-rose-500/10 flex items-center justify-center text-slate-600 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition";
-            delBtn.innerHTML = '<i class="fa-regular fa-trash-can text-[10px]"></i>';
+            delBtn.className = "w-5 h-5 rounded hover:bg-rose-500/20 flex items-center justify-center text-slate-400 hover:text-rose-500 transition";
+            delBtn.innerHTML = '<i class="fa-regular fa-trash-can text-[9px]"></i>';
+            delBtn.title = '삭제 (Delete)';
             delBtn.onclick = (evt) => {
-                evt.stopPropagation(); // Stop dblclick trigger
+                evt.stopPropagation();
                 this.handleDeleteStorageItem(item.id, item.name, item.isFolder);
             };
-            card.appendChild(delBtn);
+            actionContainer.appendChild(delBtn);
+
+            card.appendChild(actionContainer);
 
             container.appendChild(card);
         });
@@ -2135,12 +2282,7 @@ class RocketLabApp {
                     }
                 };
                 
-                // Read as base64 DataURL for images, read as Text for CSV/txt/HTML files
-                if (file.type.startsWith('image/') || file.name.endsWith('.pdf')) {
-                    reader.readAsDataURL(file);
-                } else {
-                    reader.readAsText(file);
-                }
+                reader.readAsDataURL(file);
             });
         });
 
@@ -2249,11 +2391,7 @@ class RocketLabApp {
                         }
                     };
                     
-                    if (file.type.startsWith('image/') || file.name.endsWith('.pdf')) {
-                        reader.readAsDataURL(file);
-                    } else {
-                        reader.readAsText(file);
-                    }
+                    reader.readAsDataURL(file);
                 });
             });
         });
@@ -2280,22 +2418,41 @@ class RocketLabApp {
             return new Promise((resolve) => {
                 const reader = new FileReader();
                 reader.onload = (evt) => {
-                    const tx = this.db.transaction('virtualFiles', 'readwrite');
-                    const store = tx.objectStore('virtualFiles');
-                    store.add({
+                    const fileObj = {
                         path: this.currentStoragePath,
                         name: file.name,
                         isFolder: false,
                         size: file.size,
                         type: file.type,
-                        content: evt.target.result
-                    }).onsuccess = () => resolve();
+                        content: evt.target.result,
+                        localId: Date.now() + Math.floor(Math.random() * 100)
+                    };
+                    if (this.isFirebaseConnected && this.fbRef) {
+                        if (file.size > 900 * 1024) {
+                            alert(`파일 '${file.name}'의 크기가 너무 큽니다 (최대 1MB 동기화 제한).`);
+                            resolve();
+                            return;
+                        }
+                        this.fbRef.child('files').push(fileObj)
+                            .then(() => resolve())
+                            .catch(err => {
+                                console.error("Firebase RTDB file drop error:", err);
+                                resolve();
+                            });
+                    } else {
+                        const tx = this.db.transaction('virtualFiles', 'readwrite');
+                        const store = tx.objectStore('virtualFiles');
+                        store.add({
+                            path: this.currentStoragePath,
+                            name: file.name,
+                            isFolder: false,
+                            size: file.size,
+                            type: file.type,
+                            content: evt.target.result
+                        }).onsuccess = () => resolve();
+                    }
                 };
-                if (file.type.startsWith('image/')) {
-                    reader.readAsDataURL(file);
-                } else {
-                    reader.readAsText(file);
-                }
+                reader.readAsDataURL(file);
             });
         });
 
@@ -2333,18 +2490,36 @@ class RocketLabApp {
     showPreviewModal(name, type, content) {
         document.getElementById('preview-modal').classList.remove('hidden');
         document.getElementById('preview-modal').classList.add('flex');
-        
+
         document.getElementById('preview-file-name').innerText = name;
-        
+
         const icon = document.getElementById('preview-file-icon');
         const container = document.getElementById('preview-content-area');
         container.innerHTML = '';
 
+        const isDataURL = typeof content === 'string' && content.startsWith('data:');
+        
+        // Helper to decode Base64 UTF-8 string properly
+        const decodeBase64ToText = (dataurl) => {
+            try {
+                const arr = dataurl.split(',');
+                const base64 = arr[1];
+                const binString = atob(base64);
+                const bytes = new Uint8Array(binString.length);
+                for (let i = 0; i < binString.length; i++) {
+                    bytes[i] = binString.charCodeAt(i);
+                }
+                return new TextDecoder('utf-8').decode(bytes);
+            } catch (err) {
+                console.error("Base64 decoding failed:", err);
+                return "[디코딩 실패: 바이너리 파일이거나 열 수 없는 인코딩 형식입니다]";
+            }
+        };
+
         // Configure download button
         const dBtn = document.getElementById('preview-download-btn');
         dBtn.onclick = () => {
-            const isBinary = type.startsWith('image/') || name.endsWith('.pdf');
-            const blob = isBinary 
+            const blob = isDataURL 
                 ? this.dataURLtoBlob(content) 
                 : new Blob([content], { type: type });
             
@@ -2355,6 +2530,12 @@ class RocketLabApp {
             link.click();
             document.body.removeChild(link);
         };
+
+        // Determine text content for text-based previews
+        let textContent = content;
+        if (isDataURL && !type.startsWith('image/')) {
+            textContent = decodeBase64ToText(content);
+        }
 
         // Render preview content based on type
         if (type.startsWith('image/')) {
@@ -2368,7 +2549,7 @@ class RocketLabApp {
             // Parse CSV and render HTML table
             const table = document.createElement('table');
             table.className = 'min-w-full border-collapse border border-slate-700 text-xs text-slate-300 text-center bg-slate-900/60';
-            const lines = content.split('\n').filter(l => l);
+            const lines = textContent.split('\n').filter(l => l);
             lines.forEach((line, idx) => {
                 const tr = document.createElement('tr');
                 const parts = line.split(',');
@@ -2388,7 +2569,7 @@ class RocketLabApp {
             const frame = document.createElement('iframe');
             frame.className = 'w-full h-[70vh] bg-white rounded-lg border border-slate-700';
             frame.sandbox = 'allow-scripts';
-            const blob = new Blob([content], { type: 'text/html' });
+            const blob = new Blob([textContent], { type: 'text/html' });
             frame.src = URL.createObjectURL(blob);
             container.appendChild(frame);
         } else {
@@ -2396,7 +2577,7 @@ class RocketLabApp {
             icon.className = 'fa-regular fa-file-lines text-slate-400';
             const pre = document.createElement('pre');
             pre.className = 'w-full bg-slate-950 p-4 rounded-lg font-mono text-xs text-slate-300 text-left overflow-x-auto leading-relaxed border border-slate-800 whitespace-pre-wrap';
-            pre.innerText = content;
+            pre.innerText = textContent;
             container.appendChild(pre);
         }
     }
@@ -2727,6 +2908,393 @@ class RocketLabApp {
                 });
         } else {
             completeReset();
+        }
+    }
+
+    // ==========================================
+    // VIRTUAL FILE EXPLORER CLIPBOARD ACTIONS
+    // ==========================================
+    copyStorageItem(item) {
+        this.clipboardItem = item;
+        this.clipboardAction = 'copy';
+        
+        const pasteBtn = document.getElementById('storage-paste-btn');
+        if (pasteBtn) {
+            pasteBtn.classList.remove('hidden');
+            pasteBtn.title = `'${item.name}' 복사 대기 중`;
+        }
+        console.log("Copied to clipboard:", item);
+    }
+
+    cutStorageItem(item) {
+        this.clipboardItem = item;
+        this.clipboardAction = 'cut';
+        
+        const pasteBtn = document.getElementById('storage-paste-btn');
+        if (pasteBtn) {
+            pasteBtn.classList.remove('hidden');
+            pasteBtn.title = `'${item.name}' 이동 대기 중`;
+        }
+        console.log("Cut to clipboard:", item);
+    }
+
+    async duplicateStorageItem(item) {
+        const uniqueName = await this.getUniqueStorageName(this.currentStoragePath, item.name, item.isFolder);
+        
+        if (item.isFolder) {
+            await this.duplicateFolderRecursive(item.path, item.name, uniqueName);
+        } else {
+            await this.duplicateFile(this.currentStoragePath, uniqueName, item.type, item.content, item.size);
+        }
+        this.storageRender();
+    }
+
+    async pasteStorageItem() {
+        if (!this.clipboardItem) return;
+        const item = this.clipboardItem;
+        const action = this.clipboardAction;
+
+        if (action === 'cut' && item.path === this.currentStoragePath) {
+            alert("📋 이미 현재 폴더에 위치해 있습니다.");
+            this.clearClipboard();
+            return;
+        }
+
+        const sourcePath = item.isFolder 
+            ? (item.path === '/' ? `/${item.name}` : `${item.path}/${item.name}`)
+            : '';
+        if (item.isFolder && (this.currentStoragePath === sourcePath || this.currentStoragePath.startsWith(sourcePath + '/'))) {
+            alert("❌ 폴더를 자기 자신 혹은 하위 폴더로 붙여넣을 수 없습니다.");
+            this.clearClipboard();
+            return;
+        }
+
+        let targetName = item.name;
+        const nameConflict = await this.checkStorageNameConflict(this.currentStoragePath, item.name, item.isFolder);
+        if (nameConflict || action === 'copy') {
+            targetName = await this.getUniqueStorageName(this.currentStoragePath, item.name, item.isFolder);
+        }
+
+        if (action === 'copy') {
+            if (item.isFolder) {
+                await this.duplicateFolderRecursive(this.currentStoragePath, item.name, targetName);
+            } else {
+                await this.duplicateFile(this.currentStoragePath, targetName, item.type, item.content, item.size);
+            }
+        } else if (action === 'cut') {
+            if (item.isFolder) {
+                await this.moveFolderRecursive(item.id || item.localId, item.path, item.name, this.currentStoragePath, targetName);
+            } else {
+                await this.moveFile(item.id || item.localId, this.currentStoragePath, targetName);
+            }
+        }
+
+        this.clearClipboard();
+        this.storageRender();
+    }
+
+    clearClipboard() {
+        this.clipboardItem = null;
+        this.clipboardAction = null;
+        const pasteBtn = document.getElementById('storage-paste-btn');
+        if (pasteBtn) {
+            pasteBtn.classList.add('hidden');
+        }
+    }
+
+    checkStorageNameConflict(path, name, isFolder) {
+        return new Promise((resolve) => {
+            const tx = this.db.transaction('virtualFiles', 'readonly');
+            const store = tx.objectStore('virtualFiles');
+            let conflict = false;
+            store.openCursor().onsuccess = (e) => {
+                const cursor = e.target.result;
+                if (cursor) {
+                    const f = cursor.value;
+                    if (f.path === path && f.name === name && f.isFolder === isFolder) {
+                        conflict = true;
+                    }
+                    cursor.continue();
+                } else {
+                    resolve(conflict);
+                }
+            };
+        });
+    }
+
+    getUniqueStorageName(path, name, isFolder) {
+        return new Promise((resolve) => {
+            const tx = this.db.transaction('virtualFiles', 'readonly');
+            const store = tx.objectStore('virtualFiles');
+            const existingNames = [];
+            
+            store.openCursor().onsuccess = (e) => {
+                const cursor = e.target.result;
+                if (cursor) {
+                    const f = cursor.value;
+                    if (f.path === path && f.isFolder === isFolder) {
+                        existingNames.push(f.name);
+                    }
+                    cursor.continue();
+                } else {
+                    let baseName = name;
+                    let extension = '';
+                    if (!isFolder && name.includes('.')) {
+                        const idx = name.lastIndexOf('.');
+                        baseName = name.substring(0, idx);
+                        extension = name.substring(idx);
+                    }
+                    
+                    let candidate = `${baseName}_복사본${extension}`;
+                    let counter = 1;
+                    while (existingNames.includes(candidate)) {
+                        candidate = `${baseName}_복사본(${counter})${extension}`;
+                        counter++;
+                    }
+                    resolve(candidate);
+                }
+            };
+        });
+    }
+
+    duplicateFile(targetPath, newName, type, content, size) {
+        return new Promise((resolve) => {
+            const fileObj = {
+                path: targetPath,
+                name: newName,
+                isFolder: false,
+                size: size,
+                type: type,
+                content: content,
+                localId: Date.now() + Math.floor(Math.random() * 1000)
+            };
+
+            if (this.isFirebaseConnected && this.fbRef) {
+                this.fbRef.child('files').push(fileObj)
+                    .then(() => resolve())
+                    .catch(err => {
+                        console.error("Firebase RTDB file duplication error:", err);
+                        resolve();
+                    });
+            } else {
+                const tx = this.db.transaction('virtualFiles', 'readwrite');
+                const store = tx.objectStore('virtualFiles');
+                store.add({
+                    path: targetPath,
+                    name: newName,
+                    isFolder: false,
+                    size: size,
+                    type: type,
+                    content: content
+                }).onsuccess = () => resolve();
+            }
+        });
+    }
+
+    async duplicateFolderRecursive(parentPath, originalName, newName) {
+        const sourceFolderPath = parentPath === '/' ? `/${originalName}` : `${parentPath}/${originalName}`;
+        const targetFolderPath = parentPath === '/' ? `/${newName}` : `${parentPath}/${newName}`;
+
+        await new Promise((resolve) => {
+            const folderObj = {
+                path: parentPath,
+                name: newName,
+                isFolder: true,
+                size: 0,
+                type: '',
+                content: '',
+                localId: Date.now() + Math.floor(Math.random() * 1000)
+            };
+            if (this.isFirebaseConnected && this.fbRef) {
+                this.fbRef.child('files').push(folderObj).then(() => resolve());
+            } else {
+                const tx = this.db.transaction('virtualFiles', 'readwrite');
+                tx.objectStore('virtualFiles').add({
+                    path: parentPath,
+                    name: newName,
+                    isFolder: true,
+                    size: 0,
+                    type: '',
+                    content: ''
+                }).onsuccess = () => resolve();
+            }
+        });
+
+        const tx = this.db.transaction('virtualFiles', 'readonly');
+        const store = tx.objectStore('virtualFiles');
+        const descendants = [];
+
+        await new Promise((resolve) => {
+            store.openCursor().onsuccess = (e) => {
+                const cursor = e.target.result;
+                if (cursor) {
+                    const item = cursor.value;
+                    if (item.path === sourceFolderPath || item.path.startsWith(sourceFolderPath + '/')) {
+                        descendants.push(item);
+                    }
+                    cursor.continue();
+                } else {
+                    resolve();
+                }
+            };
+        });
+
+        for (const item of descendants) {
+            const relativePath = item.path.substring(sourceFolderPath.length);
+            const targetPath = targetFolderPath + relativePath;
+
+            await new Promise((resolve) => {
+                const copyObj = {
+                    path: targetPath,
+                    name: item.name,
+                    isFolder: item.isFolder,
+                    size: item.size,
+                    type: item.type,
+                    content: item.content,
+                    localId: Date.now() + Math.floor(Math.random() * 1000)
+                };
+                if (this.isFirebaseConnected && this.fbRef) {
+                    this.fbRef.child('files').push(copyObj).then(() => resolve());
+                } else {
+                    const txAdd = this.db.transaction('virtualFiles', 'readwrite');
+                    txAdd.objectStore('virtualFiles').add({
+                        path: targetPath,
+                        name: item.name,
+                        isFolder: item.isFolder,
+                        size: item.size,
+                        type: item.type,
+                        content: item.content
+                    }).onsuccess = () => resolve();
+                }
+            });
+        }
+    }
+
+    moveFile(id, targetPath, targetName) {
+        return new Promise((resolve) => {
+            if (this.isFirebaseConnected && this.fbRef) {
+                this.fbRef.child('files').once('value').then(snapshot => {
+                    const val = snapshot.val();
+                    let fbKey = null;
+                    if (val) {
+                        fbKey = Object.keys(val).find(k => val[k].localId === id || k === id || val[k].id === id);
+                    }
+                    if (fbKey) {
+                        this.fbRef.child('files').child(fbKey).update({
+                            path: targetPath,
+                            name: targetName
+                        }).then(() => resolve());
+                    } else {
+                        resolve();
+                    }
+                });
+            } else {
+                const tx = this.db.transaction('virtualFiles', 'readwrite');
+                const store = tx.objectStore('virtualFiles');
+                store.get(id).onsuccess = (e) => {
+                    const file = e.target.result;
+                    if (file) {
+                        file.path = targetPath;
+                        file.name = targetName;
+                        store.put(file).onsuccess = () => resolve();
+                    } else {
+                        resolve();
+                    }
+                };
+            }
+        });
+    }
+
+    async moveFolderRecursive(folderId, originalParentPath, folderName, targetParentPath, newFolderName) {
+        const sourceFolderPath = originalParentPath === '/' ? `/${folderName}` : `${originalParentPath}/${folderName}`;
+        const targetFolderPath = targetParentPath === '/' ? `/${newFolderName}` : `${targetParentPath}/${newFolderName}`;
+
+        await new Promise((resolve) => {
+            if (this.isFirebaseConnected && this.fbRef) {
+                this.fbRef.child('files').once('value').then(snapshot => {
+                    const val = snapshot.val();
+                    let fbKey = null;
+                    if (val) {
+                        fbKey = Object.keys(val).find(k => val[k].localId === folderId || k === folderId || val[k].id === folderId);
+                    }
+                    if (fbKey) {
+                        this.fbRef.child('files').child(fbKey).update({
+                            path: targetParentPath,
+                            name: newFolderName
+                        }).then(() => resolve());
+                    } else {
+                        resolve();
+                    }
+                });
+            } else {
+                const tx = this.db.transaction('virtualFiles', 'readwrite');
+                const store = tx.objectStore('virtualFiles');
+                store.get(folderId).onsuccess = (e) => {
+                    const f = e.target.result;
+                    if (f) {
+                        f.path = targetParentPath;
+                        f.name = newFolderName;
+                        store.put(f).onsuccess = () => resolve();
+                    } else {
+                        resolve();
+                    }
+                };
+            }
+        });
+
+        const tx = this.db.transaction('virtualFiles', 'readonly');
+        const store = tx.objectStore('virtualFiles');
+        const descendants = [];
+
+        await new Promise((resolve) => {
+            store.openCursor().onsuccess = (e) => {
+                const cursor = e.target.result;
+                if (cursor) {
+                    const item = cursor.value;
+                    if (item.path === sourceFolderPath || item.path.startsWith(sourceFolderPath + '/')) {
+                        descendants.push(item);
+                    }
+                    cursor.continue();
+                } else {
+                    resolve();
+                }
+            };
+        });
+
+        for (const item of descendants) {
+            const relativePath = item.path.substring(sourceFolderPath.length);
+            const targetPath = targetFolderPath + relativePath;
+
+            await new Promise((resolve) => {
+                if (this.isFirebaseConnected && this.fbRef) {
+                    this.fbRef.child('files').once('value').then(snapshot => {
+                        const val = snapshot.val();
+                        let fbKey = null;
+                        if (val) {
+                            fbKey = Object.keys(val).find(k => val[k].localId === item.id || k === item.id || val[k].id === item.id);
+                        }
+                        if (fbKey) {
+                            this.fbRef.child('files').child(fbKey).update({
+                                path: targetPath
+                            }).then(() => resolve());
+                        } else {
+                            resolve();
+                        }
+                    });
+                } else {
+                    const txUpdate = this.db.transaction('virtualFiles', 'readwrite');
+                    const storeUpdate = txUpdate.objectStore('virtualFiles');
+                    storeUpdate.get(item.id).onsuccess = (e) => {
+                        const f = e.target.result;
+                        if (f) {
+                            f.path = targetPath;
+                            storeUpdate.put(f).onsuccess = () => resolve();
+                        } else {
+                            resolve();
+                        }
+                    };
+                }
+            });
         }
     }
 }
