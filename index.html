@@ -93,7 +93,7 @@
 
                 <!-- User Profile Display -->
                 <div class="flex items-center gap-3 bg-slate-800/30 border border-slate-800 rounded-full py-1.5 pl-3 pr-4">
-                    <div class="w-7 h-7 rounded-full bg-blue-600/30 border border-blue-500/50 flex items-center justify-center text-xs font-bold text-blue-300" id="user-avatar">
+                    <div class="w-7 h-7 rounded-full bg-blue-600/30 border border-blue-500/50 flex items-center justify-center text-xs font-bold text-blue-300 overflow-hidden" id="user-avatar">
                         홍
                     </div>
                     <div class="text-left leading-none">
@@ -104,6 +104,11 @@
                         <span id="user-display-id" class="text-[10px] text-slate-500 font-mono">@seojun</span>
                     </div>
                 </div>
+
+                <!-- Profile Edit Button -->
+                <button onclick="app.showProfileEditModal()" class="w-9 h-9 rounded-xl bg-slate-800/40 border border-slate-700/50 hover:bg-slate-800/80 flex items-center justify-center text-slate-400 hover:text-slate-200 transition" title="프로필 설정">
+                    <i class="fa-solid fa-user-gear"></i>
+                </button>
 
                 <!-- Dark/Light Theme Toggle -->
                 <button id="theme-toggle-btn" class="w-9 h-9 rounded-xl bg-slate-800/40 border border-slate-700/50 hover:bg-slate-800/80 flex items-center justify-center text-slate-400 hover:text-slate-200 transition">
@@ -658,6 +663,58 @@
                 <div class="flex gap-2 pt-1">
                     <button onclick="app.closeNewFolderModal()" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs py-2 rounded-lg transition">취소</button>
                     <button onclick="app.handleCreateFolderSubmit()" class="flex-1 bg-blue-600 hover:bg-blue-500 text-white text-xs py-2 rounded-lg transition">생성</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL: PROFILE SETTINGS -->
+    <div id="profile-modal" class="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm hidden items-center justify-center p-4">
+        <div class="w-full max-w-[380px] bg-slate-900 border border-slate-800 rounded-2xl p-6 relative max-h-[90vh] overflow-y-auto shadow-2xl">
+            <button onclick="app.closeProfileModal()" class="absolute right-4 top-4 text-slate-400 hover:text-slate-200"><i class="fa-solid fa-xmark"></i></button>
+            
+            <h3 class="text-sm font-bold text-slate-100 mb-4 flex items-center gap-2">
+                <i class="fa-solid fa-user-gear text-blue-400"></i>
+                <span>프로필 설정</span>
+            </h3>
+
+            <!-- 1. Avatar Update section -->
+            <div class="flex flex-col items-center pb-4 border-b border-slate-800 mb-4 space-y-2">
+                <input type="file" id="profile-avatar-input" accept="image/png, image/jpg, image/jpeg, image/webp, image/bmp" class="hidden" onchange="app.handleProfileAvatarSelected(event)">
+                <div onclick="document.getElementById('profile-avatar-input').click()" class="cursor-pointer bg-slate-800 border border-slate-700 hover:border-blue-500 w-16 h-16 rounded-full flex items-center justify-center text-lg font-bold text-blue-300 relative group overflow-hidden transition-all">
+                    <img id="profile-avatar-preview" class="w-full h-full object-cover hidden">
+                    <span id="profile-avatar-text-preview"></span>
+                    <div class="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition flex items-center justify-center text-[10px] text-slate-200 font-bold">사진 변경</div>
+                </div>
+                <div class="text-[10px] text-slate-500 text-center">png, jpg, jpeg, webp, bmp (최대 1MB)</div>
+                <button onclick="app.handleProfileAvatarSave()" class="bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-semibold px-3 py-1 rounded transition">사진 적용</button>
+            </div>
+
+            <div class="space-y-5">
+                <!-- 2. ID Update Form -->
+                <div class="space-y-2.5 border-b border-slate-800 pb-4">
+                    <h4 class="text-xs font-bold text-slate-300 flex items-center gap-1.5"><i class="fa-regular fa-id-badge text-blue-400"></i> 아이디 변경</h4>
+                    <div class="space-y-2">
+                        <input type="text" id="profile-id-current" placeholder="현재 아이디" class="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 outline-none text-xs rounded-lg p-2 text-slate-200 font-mono">
+                        <input type="text" id="profile-id-new" placeholder="변경할 아이디 (특수문자 금지)" class="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 outline-none text-xs rounded-lg p-2 text-slate-200 font-mono">
+                        <input type="text" id="profile-id-confirm" placeholder="변경할 아이디 확인" class="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 outline-none text-xs rounded-lg p-2 text-slate-200 font-mono">
+                    </div>
+                    <div class="flex justify-end pt-1">
+                        <button onclick="app.handleProfileIdUpdateSubmit()" class="w-full bg-blue-600 hover:bg-blue-500 text-white text-xs py-2 rounded-lg font-semibold transition">아이디 변경 및 재로그인</button>
+                    </div>
+                </div>
+
+                <!-- 3. Password Update Form -->
+                <div class="space-y-2.5">
+                    <h4 class="text-xs font-bold text-slate-300 flex items-center gap-1.5"><i class="fa-solid fa-key text-blue-400"></i> 비밀번호 변경</h4>
+                    <div class="space-y-2">
+                        <input type="password" id="profile-pw-current" placeholder="현재 비밀번호" class="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 outline-none text-xs rounded-lg p-2 text-slate-200">
+                        <input type="password" id="profile-pw-new" placeholder="변경할 비밀번호 (한글 불가, 2종 이상 조합)" class="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 outline-none text-xs rounded-lg p-2 text-slate-200">
+                        <input type="password" id="profile-pw-confirm" placeholder="변경할 비밀번호 확인" class="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 outline-none text-xs rounded-lg p-2 text-slate-200">
+                    </div>
+                    <div class="flex justify-end pt-1">
+                        <button onclick="app.handleProfilePasswordUpdateSubmit()" class="w-full bg-blue-600 hover:bg-blue-500 text-white text-xs py-2 rounded-lg font-semibold transition">비밀번호 변경 적용</button>
+                    </div>
                 </div>
             </div>
         </div>

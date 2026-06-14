@@ -872,7 +872,13 @@ class RocketLabApp {
         // Update profile header
         document.getElementById('user-display-name').innerText = this.currentUser.name;
         document.getElementById('user-display-id').innerText = `@${this.currentUser.id}`;
-        document.getElementById('user-avatar').innerText = this.currentUser.name.substring(0, 1);
+        
+        const userAvatarEl = document.getElementById('user-avatar');
+        if (this.currentUser.avatar) {
+            userAvatarEl.innerHTML = `<img src="${this.currentUser.avatar}" class="w-full h-full object-cover">`;
+        } else {
+            userAvatarEl.innerText = this.currentUser.name.substring(0, 1);
+        }
         
         const roleBadge = document.getElementById('user-role-badge');
         roleBadge.innerText = this.currentUser.role;
@@ -1265,10 +1271,28 @@ class RocketLabApp {
 
             // Avatar
             const avatar = document.createElement('div');
-            avatar.className = `w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${m.senderId === 'system' ? 'bg-slate-700 text-slate-300' : 'bg-blue-600/30 text-blue-300 border border-blue-500/30'}`;
+            avatar.className = `w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${m.senderId === 'system' ? 'bg-slate-700 text-slate-300' : 'bg-blue-600/30 text-blue-300 border border-blue-500/30'} overflow-hidden`;
             
             const senderName = m.senderName || '알수없음';
-            avatar.innerText = (typeof senderName === 'string' && senderName.length > 0) ? senderName.substring(0, 1) : '?';
+            
+            let senderAvatar = null;
+            if (m.senderId && m.senderId !== 'system') {
+                try {
+                    const localUsers = JSON.parse(localStorage.getItem('rocket_users') || '[]');
+                    const foundUser = localUsers.find(u => u && u.id === m.senderId);
+                    if (foundUser && foundUser.avatar) {
+                        senderAvatar = foundUser.avatar;
+                    }
+                } catch (e) {
+                    console.error("Failed to lookup sender avatar:", e);
+                }
+            }
+
+            if (senderAvatar) {
+                avatar.innerHTML = `<img src="${senderAvatar}" class="w-full h-full object-cover">`;
+            } else {
+                avatar.innerText = (typeof senderName === 'string' && senderName.length > 0) ? senderName.substring(0, 1) : '?';
+            }
 
             // Message Bubble & Info wrapper
             const contentWrap = document.createElement('div');
@@ -2805,8 +2829,11 @@ class RocketLabApp {
         users.forEach(u => {
             const tr = document.createElement('tr');
             tr.className = 'border-b border-slate-800/50 hover:bg-slate-800/20';
+            const avatarHtml = u.avatar 
+                ? `<img src="${u.avatar}" class="w-5 h-5 rounded-full object-cover inline-block mr-1.5 align-middle">` 
+                : `<div class="w-5 h-5 rounded-full bg-slate-800 border border-slate-700/50 flex items-center justify-center text-[9px] font-bold text-slate-400 inline-block mr-1.5 align-middle">${u.name.substring(0,1)}</div>`;
             tr.innerHTML = `
-                <td class="py-2.5 font-semibold text-slate-200">${u.name}</td>
+                <td class="py-2.5 font-semibold text-slate-200">${avatarHtml}${u.name}</td>
                 <td class="py-2.5 font-mono text-slate-400">@${u.id}</td>
                 <td class="py-2.5 font-mono text-slate-400">
                     <input type="password" value="${u.pw}" onchange="app.adminUpdateUserPassword('${u.id}', this.value)" class="bg-transparent text-slate-400 border border-slate-800 focus:border-slate-700 rounded px-1.5 py-0.5 outline-none text-[11px] w-24">
@@ -3493,6 +3520,331 @@ class RocketLabApp {
                 }
             });
         }
+    }
+
+    showProfileEditModal() {
+        if (!this.currentUser) return;
+        const modal = document.getElementById('profile-modal');
+        modal.classList.remove('hidden');
+        modal.classList.add('flex');
+
+        const previewImg = document.getElementById('profile-avatar-preview');
+        const previewText = document.getElementById('profile-avatar-text-preview');
+        if (this.currentUser.avatar) {
+            previewImg.src = this.currentUser.avatar;
+            previewImg.classList.remove('hidden');
+            previewText.classList.add('hidden');
+        } else {
+            previewImg.classList.add('hidden');
+            previewText.innerText = this.currentUser.name.substring(0, 1);
+            previewText.classList.remove('hidden');
+        }
+
+        document.getElementById('profile-id-current').value = '';
+        document.getElementById('profile-id-new').value = '';
+        document.getElementById('profile-id-confirm').value = '';
+        document.getElementById('profile-pw-current').value = '';
+        document.getElementById('profile-pw-new').value = '';
+        document.getElementById('profile-pw-confirm').value = '';
+        this.tempAvatarData = null;
+    }
+
+    closeProfileModal() {
+        const modal = document.getElementById('profile-modal');
+        modal.classList.remove('flex');
+        modal.classList.add('hidden');
+        this.tempAvatarData = null;
+    }
+
+    handleProfileAvatarSelected(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const allowedExtensions = ['png', 'jpg', 'jpeg', 'webp', 'bmp'];
+        const fileName = file.name.toLowerCase();
+        const extension = fileName.substring(fileName.lastIndexOf('.') + 1);
+        if (!allowedExtensions.includes(extension)) {
+            alert("❌ 허용되지 않는 파일 형식입니다. png, jpg, jpeg, webp, bmp 형식의 이미지만 업로드 가능합니다.");
+            e.target.value = '';
+            return;
+        }
+
+        if (file.size > 1024 * 1024) {
+            alert("❌ 파일 크기가 1MB를 초과합니다. 1MB 이하의 이미지만 업로드 가능합니다.");
+            e.target.value = '';
+            return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            this.tempAvatarData = event.target.result;
+            const previewImg = document.getElementById('profile-avatar-preview');
+            const previewText = document.getElementById('profile-avatar-text-preview');
+            previewImg.src = this.tempAvatarData;
+            previewImg.classList.remove('hidden');
+            previewText.classList.add('hidden');
+        };
+        reader.readAsDataURL(file);
+    }
+
+    async handleProfileAvatarSave() {
+        if (!this.tempAvatarData) {
+            alert("❌ 적용할 이미지를 선택해 주세요.");
+            return;
+        }
+        if (!this.currentUser) return;
+
+        this.currentUser.avatar = this.tempAvatarData;
+        localStorage.setItem('rocket_session', JSON.stringify(this.currentUser));
+
+        const users = JSON.parse(localStorage.getItem('rocket_users') || '[]');
+        const userIdx = users.findIndex(u => u && u.id === this.currentUser.id);
+        if (userIdx !== -1) {
+            users[userIdx].avatar = this.tempAvatarData;
+            localStorage.setItem('rocket_users', JSON.stringify(users));
+        }
+
+        if (this.isFirebaseConnected && this.fbRef) {
+            try {
+                await this.fbRef.child('users').child(this.currentUser.id).child('avatar').set(this.tempAvatarData);
+            } catch (err) {
+                console.error("Firebase avatar upload failed:", err);
+                alert("❌ 실시간 데이터베이스 아바타 업데이트 실패. 로컬에만 임시 적용됩니다.");
+                return;
+            }
+        }
+
+        alert("✅ 프로필 사진이 성공적으로 적용되었습니다.");
+        this.showMainApp();
+        this.closeProfileModal();
+    }
+
+    async handleProfileIdUpdateSubmit() {
+        if (!this.currentUser) return;
+
+        const currentId = document.getElementById('profile-id-current').value.trim();
+        const newId = document.getElementById('profile-id-new').value.trim();
+        const confirmId = document.getElementById('profile-id-confirm').value.trim();
+
+        if (!currentId || !newId || !confirmId) {
+            alert("❌ 모든 필드를 입력해 주세요.");
+            return;
+        }
+
+        if (currentId !== this.currentUser.id) {
+            alert("❌ 현재 아이디가 일치하지 않습니다.");
+            return;
+        }
+
+        if (newId === this.currentUser.id) {
+            alert("❌ 변경할 아이디가 현재 아이디와 동일합니다.");
+            return;
+        }
+
+        if (newId !== confirmId) {
+            alert("❌ 변경할 아이디 확인이 일치하지 않습니다.");
+            return;
+        }
+
+        // Constraints check: Korean, English, numbers only (no special characters)
+        const idRegex = /^[a-zA-Z0-9가-힣]+$/;
+        if (!idRegex.test(newId)) {
+            alert("❌ 아이디에 특수문자는 사용할 수 없습니다. (한글, 영어, 숫자만 허용)");
+            return;
+        }
+
+        // Firebase forbidden characters check
+        const firebaseForbidden = /[\.\$\#\[\]\/]/;
+        if (firebaseForbidden.test(newId)) {
+            alert("❌ 아이디에 파이어베이스 제한 문자(., $, #, [, ], /)는 사용할 수 없습니다.");
+            return;
+        }
+
+        // Duplicate check
+        const users = JSON.parse(localStorage.getItem('rocket_users') || '[]');
+        const exists = users.some(u => u && u.id === newId);
+        if (exists) {
+            alert("❌ 이미 사용 중인 아이디입니다.");
+            return;
+        }
+
+        if (this.isFirebaseConnected && this.fbRef) {
+            try {
+                const snapshot = await this.fbRef.child('users').child(newId).once('value');
+                if (snapshot.exists()) {
+                    alert("❌ 이미 사용 중인 아이디입니다.");
+                    return;
+                }
+            } catch (err) {
+                console.error("Firebase ID check failed:", err);
+            }
+        }
+
+        const proceed = confirm("⚠️ 아이디 변경 시 현재 ID가 삭제되고 로그인이 해제되오니 다시 로그인해야 합니다. 변경하시겠습니까?");
+        if (!proceed) return;
+
+        const oldId = this.currentUser.id;
+        const newUserData = { ...this.currentUser, id: newId };
+
+        // 1. Update users database
+        if (this.isFirebaseConnected && this.fbRef) {
+            try {
+                await this.fbRef.child('users').child(newId).set(newUserData);
+                await this.fbRef.child('users').child(oldId).remove();
+            } catch (err) {
+                console.error("Firebase ID migration failed:", err);
+                alert("❌ 실시간 데이터베이스 아이디 업데이트 실패. 인터넷 연결을 확인해 주세요.");
+                return;
+            }
+        }
+
+        const localUsers = JSON.parse(localStorage.getItem('rocket_users') || '[]');
+        let updatedLocalUsers = localUsers.map(u => {
+            if (u && u.id === oldId) {
+                return newUserData;
+            }
+            return u;
+        }).filter(u => u && u.id !== oldId || u.id === newId);
+        localStorage.setItem('rocket_users', JSON.stringify(updatedLocalUsers));
+
+        // 2. Migrate messages
+        if (this.isFirebaseConnected && this.fbRef) {
+            try {
+                const messagesSnapshot = await this.fbRef.child('messages').once('value');
+                const messagesVal = messagesSnapshot.val();
+                if (messagesVal) {
+                    const updates = {};
+                    Object.keys(messagesVal).forEach(msgKey => {
+                        const m = messagesVal[msgKey];
+                        if (m) {
+                            let updated = false;
+                            const updatePath = `/messages/${msgKey}`;
+                            if (m.senderId === oldId) {
+                                updates[`${updatePath}/senderId`] = newId;
+                                updated = true;
+                            }
+                            if (m.readBy && typeof m.readBy === 'object') {
+                                if (m.readBy[oldId] !== undefined) {
+                                    updates[`${updatePath}/readBy/${newId}`] = m.readBy[oldId];
+                                    updates[`${updatePath}/readBy/${oldId}`] = null;
+                                    updated = true;
+                                }
+                            }
+                        }
+                    });
+                    if (Object.keys(updates).length > 0) {
+                        await this.fbRef.update(updates);
+                    }
+                }
+            } catch (err) {
+                console.error("Firebase messages migration failed:", err);
+            }
+        }
+
+        let localMessages = [];
+        try {
+            localMessages = JSON.parse(localStorage.getItem('rocket_messages') || '[]');
+        } catch (err) {
+            console.error(err);
+        }
+        let localUpdated = false;
+        localMessages.forEach(m => {
+            if (m) {
+                if (m.senderId === oldId) {
+                    m.senderId = newId;
+                    localUpdated = true;
+                }
+                if (m.readBy && typeof m.readBy === 'object') {
+                    if (m.readBy[oldId] !== undefined) {
+                        m.readBy[newId] = m.readBy[oldId];
+                        delete m.readBy[oldId];
+                        localUpdated = true;
+                    }
+                }
+            }
+        });
+        if (localUpdated) {
+            localStorage.setItem('rocket_messages', JSON.stringify(localMessages));
+        }
+
+        alert("⚠️ 아이디 변경 성공! 현재 ID가 삭제되고 로그인이 해제되오니 다시 로그인해 주시기 바랍니다.");
+        this.logout();
+        this.closeProfileModal();
+    }
+
+    async handleProfilePasswordUpdateSubmit() {
+        if (!this.currentUser) return;
+
+        const currentPw = document.getElementById('profile-pw-current').value;
+        const newPw = document.getElementById('profile-pw-new').value;
+        const confirmPw = document.getElementById('profile-pw-confirm').value;
+
+        if (!currentPw || !newPw || !confirmPw) {
+            alert("❌ 모든 필드를 입력해 주세요.");
+            return;
+        }
+
+        if (currentPw !== this.currentUser.pw) {
+            alert("❌ 현재 비밀번호가 일치하지 않습니다.");
+            return;
+        }
+
+        if (newPw !== confirmPw) {
+            alert("❌ 변경할 비밀번호 확인이 일치하지 않습니다.");
+            return;
+        }
+
+        // Validate Password constraints
+        // 1. No Korean
+        const hasKorean = /[\uac00-\ud7a3\u3130-\u318f]/.test(newPw);
+        if (hasKorean) {
+            alert("❌ 비밀번호에는 한글을 사용할 수 없습니다.");
+            return;
+        }
+
+        // 2. Firebase forbidden characters
+        const firebaseForbidden = /[\.\$\#\[\]\/]/;
+        if (firebaseForbidden.test(newPw)) {
+            alert("❌ 비밀번호에 파이어베이스 제한 문자(., $, #, [, ], /)는 사용할 수 없습니다.");
+            return;
+        }
+
+        // 3. Category match count (2+ combinations: 영어 대, 영어 소, 숫자, 특수문자)
+        let categories = 0;
+        if (/[A-Z]/.test(newPw)) categories++;
+        if (/[a-z]/.test(newPw)) categories++;
+        if (/[0-9]/.test(newPw)) categories++;
+        // Any character that is not alphanumeric and not firebase forbidden and not space
+        if (/[^a-zA-Z0-9가-힣\.\$\#\[\]\/]/.test(newPw)) categories++;
+
+        if (categories < 2) {
+            alert("❌ 비밀번호는 영어 대문자, 영어 소문자, 숫자, 특수문자 중 2가지 이상의 조합이어야 합니다.");
+            return;
+        }
+
+        // Update pw
+        this.currentUser.pw = newPw;
+        localStorage.setItem('rocket_session', JSON.stringify(this.currentUser));
+
+        const users = JSON.parse(localStorage.getItem('rocket_users') || '[]');
+        const userIdx = users.findIndex(u => u && u.id === this.currentUser.id);
+        if (userIdx !== -1) {
+            users[userIdx].pw = newPw;
+            localStorage.setItem('rocket_users', JSON.stringify(users));
+        }
+
+        if (this.isFirebaseConnected && this.fbRef) {
+            try {
+                await this.fbRef.child('users').child(this.currentUser.id).child('pw').set(newPw);
+            } catch (err) {
+                console.error("Firebase password update failed:", err);
+                alert("❌ 실시간 데이터베이스 비밀번호 업데이트 실패. 인터넷 연결을 확인해 주세요.");
+                return;
+            }
+        }
+
+        alert("✅ 비밀번호가 성공적으로 변경되었습니다.");
+        this.closeProfileModal();
     }
 }
 
