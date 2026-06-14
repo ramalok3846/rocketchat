@@ -199,6 +199,9 @@ class RocketLabApp {
 
     // Initialize Application
     async init() {
+        // Safe clear corrupted/full message backup in localStorage to recover from QuotaExceededError
+        localStorage.removeItem('rocket_messages');
+
         this.initDOM();
         await this.initDatabase();
         this.loadInitialData();
@@ -474,7 +477,22 @@ class RocketLabApp {
                 return tA - tB;
             });
             
-            localStorage.setItem('rocket_messages', JSON.stringify(messages));
+            // Save to memory cache to bypass localStorage limit for active sessions
+            this.messages = messages;
+            
+            // Save diet version to localStorage (remove binary data payload to prevent QuotaExceededError)
+            const dietMessages = messages.map(m => {
+                if (m.attachment) {
+                    const { data, ...restAttachment } = m.attachment;
+                    return { ...m, attachment: restAttachment };
+                }
+                return m;
+            });
+            try {
+                localStorage.setItem('rocket_messages', JSON.stringify(dietMessages));
+            } catch (storageErr) {
+                console.warn("LocalStorage backup write failed (quota exceeded), skipping backup:", storageErr);
+            }
             
             const msgBadge = document.getElementById('db-messages-badge');
             const msgCount = document.getElementById('db-messages-count');
@@ -484,7 +502,7 @@ class RocketLabApp {
             }
             
             if (this.activeTab === 'chat' && this.currentUser) {
-                this.renderChatMessages();
+                this.renderChatMessages(messages);
             }
         });
 
@@ -1176,19 +1194,25 @@ class RocketLabApp {
         });
     }
 
-    renderChatMessages() {
+    renderChatMessages(messagesFromSync = null) {
         if (!this.currentUser) return;
 
         const container = document.getElementById('chat-messages-container');
         container.innerHTML = '';
 
         let allMessages = [];
-        try {
-            allMessages = JSON.parse(localStorage.getItem('rocket_messages') || '[]');
-            if (!Array.isArray(allMessages)) allMessages = [];
-        } catch (err) {
-            console.error("Failed to parse rocket_messages from localStorage:", err);
-            allMessages = [];
+        if (messagesFromSync && Array.isArray(messagesFromSync)) {
+            allMessages = messagesFromSync;
+        } else if (this.messages && Array.isArray(this.messages) && this.messages.length > 0) {
+            allMessages = this.messages;
+        } else {
+            try {
+                allMessages = JSON.parse(localStorage.getItem('rocket_messages') || '[]');
+                if (!Array.isArray(allMessages)) allMessages = [];
+            } catch (err) {
+                console.error("Failed to parse rocket_messages from localStorage:", err);
+                allMessages = [];
+            }
         }
 
         const filtered = allMessages.filter(m => m && m.channelId === this.currentChannelId);
@@ -1209,7 +1233,19 @@ class RocketLabApp {
         });
 
         if (localMessagesUpdated) {
-            localStorage.setItem('rocket_messages', JSON.stringify(allMessages));
+            // Save diet version to localStorage (remove binary data payload to prevent QuotaExceededError)
+            const dietMessages = allMessages.map(m => {
+                if (m.attachment) {
+                    const { data, ...restAttachment } = m.attachment;
+                    return { ...m, attachment: restAttachment };
+                }
+                return m;
+            });
+            try {
+                localStorage.setItem('rocket_messages', JSON.stringify(dietMessages));
+            } catch (storageErr) {
+                console.warn("LocalStorage backup write failed during read marking:", storageErr);
+            }
         }
 
         if (filtered.length === 0) {
