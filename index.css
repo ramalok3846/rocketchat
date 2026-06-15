@@ -465,3 +465,15 @@ body.light-theme .hover\:bg-slate-850\/60:hover {
 body.light-theme .text-slate-400.hover\:text-slate-200:hover {
     color: #1f2937 !important;
 }
+
+/* Link toggle buttons styling for light mode */
+body.light-theme .bg-slate-800\/80 {
+    background-color: #e5e7eb !important;
+    color: #4b5563 !important;
+    border-color: #d1d5db !important;
+}
+body.light-theme .hover\:bg-slate-700\/80:hover {
+    background-color: #d1d5db !important;
+    color: #1f2937 !important;
+}
+

@@ -12,6 +12,7 @@ class RocketLabApp {
         this.currentChannelId = 'general';
         this.currentStoragePath = '/';
         this.activeChatAttachment = null;
+        this.activeChatLinks = [];
         this.chartInstance = null;
         this.activeSimHtml = '';
         
@@ -21,6 +22,9 @@ class RocketLabApp {
         
         // Chat send submit lock
         this.isSendingMessage = false;
+        
+        // Manual explicitly unread messages set
+        this.explicitlyUnreadMessages = new Set();
         
         // Firebase Cloud Realtime Database state
         this.fbRef = null;
@@ -260,6 +264,20 @@ class RocketLabApp {
             storage: document.getElementById('nav-storage'),
             admin: document.getElementById('nav-admin')
         };
+
+        // Textarea auto-resize and Enter key send setup
+        if (this.chatInput && this.chatInput.tagName === 'TEXTAREA') {
+            this.chatInput.addEventListener('input', () => {
+                this.chatInput.style.height = 'auto';
+                this.chatInput.style.height = (this.chatInput.scrollHeight) + 'px';
+            });
+            this.chatInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    this.handleSendMessage(e);
+                }
+            });
+        }
     }
 
     // Initialize Databases (IndexedDB for files/folders/simulators, LocalStorage for state/auth/chat)
@@ -449,6 +467,17 @@ class RocketLabApp {
             }
         });
 
+        // 1.5. Simulator Config Sync
+        const simConfigRef = this.fbRef.child('simulator_config');
+        registerListener(simConfigRef, 'value', snapshot => {
+            const config = snapshot.val();
+            if (config) {
+                localStorage.setItem('rocket_simulator_config', JSON.stringify(config));
+            } else {
+                localStorage.removeItem('rocket_simulator_config');
+            }
+        });
+
         // 2. Chat Messages Sync
         const messagesRef = this.fbRef.child('messages');
         registerListener(messagesRef, 'value', snapshot => {
@@ -477,6 +506,28 @@ class RocketLabApp {
                 return tA - tB;
             });
             
+            // Identify new messages in the active channel to auto-read them
+            if (this.currentUser && this.activeTab === 'chat' && this.currentChannelId) {
+                const oldMessageIds = new Set((this.messages || []).map(m => m.id));
+                messages.forEach(m => {
+                    if (m && m.channelId === this.currentChannelId && !oldMessageIds.has(m.id)) {
+                        if (!m.readBy || typeof m.readBy !== 'object') m.readBy = {};
+                        const hasRead = m.readBy[this.currentUser.id] || false;
+                        if (!hasRead) {
+                            const isExplicitlyUnread = this.explicitlyUnreadMessages && this.explicitlyUnreadMessages.has(m.id);
+                            if (!isExplicitlyUnread) {
+                                m.readBy[this.currentUser.id] = true;
+                                if (m.id && typeof m.id === 'string' && this.isFirebaseConnected && this.fbRef) {
+                                    console.log("Auto-marked new message as read:", m.id);
+                                    this.fbRef.child('messages').child(m.id).child('readBy').child(this.currentUser.id).set(true)
+                                        .catch(err => console.error("Error marking new message as read:", err));
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+
             // Save to memory cache to bypass localStorage limit for active sessions
             this.messages = messages;
             
@@ -620,7 +671,8 @@ class RocketLabApp {
                     isFolder: fileObj.isFolder,
                     size: fileObj.size,
                     type: fileObj.type,
-                    content: fileObj.content
+                    content: fileObj.content,
+                    disableLinks: fileObj.disableLinks || false
                 }).onsuccess = () => resolve();
             });
         });
@@ -1155,6 +1207,10 @@ class RocketLabApp {
 
         // Trigger action hooks
         if (tabId === 'chat') {
+            if (this.explicitlyUnreadMessages) {
+                this.explicitlyUnreadMessages.clear();
+            }
+            this.markChannelMessagesAsRead(this.currentChannelId);
             this.renderChatMessages();
         } else if (tabId === 'table') {
             this.renderTableTool();
@@ -1167,6 +1223,7 @@ class RocketLabApp {
         } else if (tabId === 'admin') {
             this.renderAdminUsersList();
             this.renderAdminRequestsList();
+            this.populateAdminSimulatorConfig();
         }
     }
 
@@ -1180,6 +1237,9 @@ class RocketLabApp {
             const isActive = ch.id === this.currentChannelId;
             btn.className = `w-full flex items-center justify-between px-3 py-2 rounded-lg text-left transition ${isActive ? 'bg-slate-800/80 text-blue-300 font-semibold' : 'hover:bg-slate-800/30 text-slate-400 hover:text-slate-200'}`;
             btn.onclick = () => {
+                if (this.explicitlyUnreadMessages) {
+                    this.explicitlyUnreadMessages.clear();
+                }
                 this.currentChannelId = ch.id;
                 document.getElementById('active-channel-name').innerText = ch.name;
                 document.getElementById('active-channel-desc').innerText = ch.desc;
@@ -1198,6 +1258,59 @@ class RocketLabApp {
             }
             container.appendChild(btn);
         });
+    }
+
+    markChannelMessagesAsRead(channelId) {
+        if (!this.currentUser) return;
+
+        let allMessages = [];
+        if (this.messages && Array.isArray(this.messages) && this.messages.length > 0) {
+            allMessages = this.messages;
+        } else {
+            try {
+                allMessages = JSON.parse(localStorage.getItem('rocket_messages') || '[]');
+                if (!Array.isArray(allMessages)) allMessages = [];
+            } catch (err) {
+                allMessages = [];
+            }
+        }
+
+        const filtered = allMessages.filter(m => m && m.channelId === channelId);
+        let localMessagesUpdated = false;
+
+        filtered.forEach(m => {
+            if (!m) return;
+            if (!m.readBy || typeof m.readBy !== 'object') m.readBy = {};
+            const hasRead = m.readBy[this.currentUser.id] || false;
+            if (!hasRead) {
+                const isExplicitlyUnread = this.explicitlyUnreadMessages && this.explicitlyUnreadMessages.has(m.id);
+                if (isExplicitlyUnread) return;
+
+                m.readBy[this.currentUser.id] = true;
+                if (m.id && typeof m.id === 'string' && this.isFirebaseConnected && this.fbRef) {
+                    console.log("markChannelMessagesAsRead marked message read:", m.id);
+                    this.fbRef.child('messages').child(m.id).child('readBy').child(this.currentUser.id).set(true)
+                        .catch(err => console.error("Error marking read in markChannelMessagesAsRead:", err));
+                } else {
+                    localMessagesUpdated = true;
+                }
+            }
+        });
+
+        if (localMessagesUpdated) {
+            const dietMessages = allMessages.map(m => {
+                if (m.attachment) {
+                    const { data, ...restAttachment } = m.attachment;
+                    return { ...m, attachment: restAttachment };
+                }
+                return m;
+            });
+            try {
+                localStorage.setItem('rocket_messages', JSON.stringify(dietMessages));
+            } catch (storageErr) {
+                console.warn("LocalStorage backup write failed in markChannelMessagesAsRead:", storageErr);
+            }
+        }
     }
 
     renderChatMessages(messagesFromSync = null) {
@@ -1222,37 +1335,6 @@ class RocketLabApp {
         }
 
         const filtered = allMessages.filter(m => m && m.channelId === this.currentChannelId);
-
-        // Mark messages in the current channel as read
-        let localMessagesUpdated = false;
-        filtered.forEach(m => {
-            if (!m.readBy || typeof m.readBy !== 'object') m.readBy = {};
-            if (!m.readBy[this.currentUser.id]) {
-                m.readBy[this.currentUser.id] = true;
-                if (m.id && typeof m.id === 'string' && this.isFirebaseConnected && this.fbRef) {
-                    this.fbRef.child('messages').child(m.id).child('readBy').child(this.currentUser.id).set(true)
-                        .catch(err => console.error("Error marking read:", err));
-                } else {
-                    localMessagesUpdated = true;
-                }
-            }
-        });
-
-        if (localMessagesUpdated) {
-            // Save diet version to localStorage (remove binary data payload to prevent QuotaExceededError)
-            const dietMessages = allMessages.map(m => {
-                if (m.attachment) {
-                    const { data, ...restAttachment } = m.attachment;
-                    return { ...m, attachment: restAttachment };
-                }
-                return m;
-            });
-            try {
-                localStorage.setItem('rocket_messages', JSON.stringify(dietMessages));
-            } catch (storageErr) {
-                console.warn("LocalStorage backup write failed during read marking:", storageErr);
-            }
-        }
 
         if (filtered.length === 0) {
             container.innerHTML = `
@@ -1322,7 +1404,7 @@ class RocketLabApp {
 
             // Render message text content
             const textNode = document.createElement('div');
-            textNode.innerText = m.content || '';
+            this.renderTextWithLinks(textNode, m.content || '', m.disableLinks, (disable) => this.toggleMessageLink(m.id, disable));
             bubble.appendChild(textNode);
 
             // Render attachments if exists
@@ -1338,6 +1420,44 @@ class RocketLabApp {
                     img.className = 'max-h-48 rounded border border-white/10 cursor-pointer object-contain hover:brightness-95 transition';
                     img.onclick = () => this.showPreviewModal(attInfo.name, attInfo.type, attInfo.data);
                     attNode.appendChild(img);
+                } else if (attInfo.type === 'text/url') {
+                    const card = document.createElement('div');
+                    card.className = 'bg-slate-950/60 p-3 rounded-xl border border-slate-800 flex flex-col gap-2 min-w-[200px] max-w-full';
+                    card.innerHTML = `
+                        <div class="flex items-start gap-2.5">
+                            <div class="w-8 h-8 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400 shrink-0">
+                                <i class="fa-solid fa-link text-sm"></i>
+                            </div>
+                            <div class="text-left leading-tight flex-1 min-w-0">
+                                <div class="font-bold text-slate-200 text-xs truncate">${attInfo.name}</div>
+                                <div class="text-[9px] text-slate-500 font-mono truncate mt-0.5">${attInfo.data}</div>
+                            </div>
+                        </div>
+                        <a href="${attInfo.data}" target="_blank" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold text-[10px] py-1.5 rounded-lg transition text-center block shadow-lg shadow-blue-500/10 select-none">
+                            <i class="fa-solid fa-arrow-up-right-from-square mr-1"></i> 링크 열기
+                        </a>
+                    `;
+                    attNode.appendChild(card);
+                } else if (attInfo.type === 'text/urls' && Array.isArray(attInfo.links)) {
+                    attInfo.links.forEach(lnk => {
+                        const card = document.createElement('div');
+                        card.className = 'bg-slate-950/60 p-3 rounded-xl border border-slate-800 flex flex-col gap-2 min-w-[200px] max-w-full mb-2 last:mb-0';
+                        card.innerHTML = `
+                            <div class="flex items-start gap-2.5">
+                                <div class="w-8 h-8 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400 shrink-0">
+                                    <i class="fa-solid fa-link text-sm"></i>
+                                </div>
+                                <div class="text-left leading-tight flex-1 min-w-0">
+                                    <div class="font-bold text-slate-200 text-xs truncate">${lnk.name || lnk.url}</div>
+                                    <div class="text-[9px] text-slate-500 font-mono truncate mt-0.5">${lnk.url}</div>
+                                </div>
+                            </div>
+                            <a href="${lnk.url}" target="_blank" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold text-[10px] py-1.5 rounded-lg transition text-center block shadow-lg shadow-blue-500/10 select-none">
+                                <i class="fa-solid fa-arrow-up-right-from-square mr-1"></i> 링크 열기
+                            </a>
+                        `;
+                        attNode.appendChild(card);
+                    });
                 } else if (attInfo.name && (attInfo.name.endsWith('.html') || attInfo.type === 'text/html')) {
                     // Special load button for custom HTML simulators shared in chat
                     const card = document.createElement('div');
@@ -1377,13 +1497,42 @@ class RocketLabApp {
                 bubble.appendChild(attNode);
             }
 
-            // Message Delete Button (Admin can delete all, users delete own)
-            if (this.currentUser.role === 'ADMIN' || isMe) {
-                const delBtn = document.createElement('button');
-                delBtn.className = `absolute ${isMe ? '-left-6' : '-right-6'} top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition p-1 text-slate-600 hover:text-rose-500`;
-                delBtn.innerHTML = '<i class="fa-regular fa-trash-can text-[11px]"></i>';
-                delBtn.onclick = () => this.handleDeleteMessage(m.id);
-                bubble.appendChild(delBtn);
+            // Message Action Toolbar (Hover state)
+            if (m.senderId !== 'system') {
+                const actionContainer = document.createElement('div');
+                actionContainer.className = `absolute ${isMe ? 'left-3' : 'right-3'} -top-3 opacity-0 group-hover:opacity-100 transition flex items-center gap-1 z-20 bg-slate-900 border border-slate-800 rounded-lg p-0.5 shadow-lg`;
+
+                // Read status toggle button
+                const toggleReadBtn = document.createElement('button');
+                toggleReadBtn.className = 'w-5 h-5 rounded bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/50 flex items-center justify-center text-slate-400 hover:text-slate-200 transition';
+                
+                const hasCurrentUserRead = m.readBy && m.readBy[this.currentUser.id];
+                if (hasCurrentUserRead) {
+                    toggleReadBtn.innerHTML = '<i class="fa-regular fa-envelope text-[10px]"></i>';
+                    toggleReadBtn.title = '안읽음으로 표시';
+                } else {
+                    toggleReadBtn.innerHTML = '<i class="fa-regular fa-envelope-open text-[10px]"></i>';
+                    toggleReadBtn.title = '읽음으로 표시';
+                }
+                toggleReadBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    this.toggleUserMessageReadStatus(m.id);
+                };
+                actionContainer.appendChild(toggleReadBtn);
+
+                // Message Delete Button (Admin can delete all, users delete own)
+                if (this.currentUser.role === 'ADMIN' || isMe) {
+                    const delBtn = document.createElement('button');
+                    delBtn.className = 'w-5 h-5 rounded bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/50 flex items-center justify-center text-slate-400 hover:text-rose-500 transition';
+                    delBtn.innerHTML = '<i class="fa-regular fa-trash-can text-[10px]"></i>';
+                    delBtn.onclick = (e) => {
+                        e.stopPropagation();
+                        this.handleDeleteMessage(m.id);
+                    };
+                    actionContainer.appendChild(delBtn);
+                }
+
+                bubble.appendChild(actionContainer);
             }
 
             // Create status indicator column (unread count and timestamp)
@@ -1410,19 +1559,17 @@ class RocketLabApp {
 
             if (unreadCount > 0) {
                 const unreadBadge = document.createElement('span');
-                unreadBadge.className = 'text-amber-400 font-bold font-mono text-[10px] leading-none mb-0.5 cursor-pointer hover:underline';
+                unreadBadge.className = 'text-amber-400 font-bold font-mono text-[10px] leading-none mb-0.5';
                 unreadBadge.innerText = unreadCount;
-                unreadBadge.title = '클릭하여 읽은 사람 확인';
-                unreadBadge.onclick = () => this.showReadStatus(m.id);
                 statusCol.appendChild(unreadBadge);
-            } else {
-                const readBadge = document.createElement('span');
-                readBadge.className = 'text-slate-600 text-[9px] font-semibold leading-none mb-0.5 cursor-pointer hover:underline';
-                readBadge.innerText = '읽음';
-                readBadge.title = '클릭하여 읽은 사람 확인';
-                readBadge.onclick = () => this.showReadStatus(m.id);
-                statusCol.appendChild(readBadge);
             }
+
+            const chevronBtn = document.createElement('span');
+            chevronBtn.className = 'text-slate-500 hover:text-slate-300 text-[9px] font-bold leading-none mb-1 cursor-pointer select-none px-1 py-0.5 hover:bg-slate-800/40 rounded transition-colors';
+            chevronBtn.innerText = '>';
+            chevronBtn.title = '클릭하여 읽은 사람 확인';
+            chevronBtn.onclick = () => this.showReadStatus(m.id);
+            statusCol.appendChild(chevronBtn);
 
             const timeLabel = document.createElement('span');
             timeLabel.className = 'text-[9px] text-slate-500 font-mono scale-90 origin-bottom leading-none cursor-pointer hover:text-slate-400 transition-colors';
@@ -1465,8 +1612,16 @@ class RocketLabApp {
     }
 
     showReadStatus(messageId) {
-        const allMessages = JSON.parse(localStorage.getItem('rocket_messages') || '[]');
-        const m = allMessages.find(msg => msg.id === messageId);
+        let m = null;
+        if (this.messages) {
+            m = this.messages.find(msg => msg && msg.id === messageId);
+        }
+        if (!m) {
+            try {
+                const allMessages = JSON.parse(localStorage.getItem('rocket_messages') || '[]');
+                m = allMessages.find(msg => msg && msg.id === messageId);
+            } catch(e){}
+        }
         if (!m) return;
 
         const users = JSON.parse(localStorage.getItem('rocket_users') || '[]');
@@ -1541,8 +1696,9 @@ class RocketLabApp {
         try {
             const content = this.chatInput.value.trim();
             const hasAttachment = this.activeChatAttachment !== null;
+            const hasLinks = this.activeChatLinks && this.activeChatLinks.length > 0;
 
-            if (!content && !hasAttachment) return;
+            if (!content && !hasAttachment && !hasLinks) return;
 
             // Validation for notice channel: only Admin can post
             const activeCh = this.channels.find(c => c.id === this.currentChannelId);
@@ -1564,20 +1720,98 @@ class RocketLabApp {
                 submitBtn.classList.add('opacity-50', 'cursor-not-allowed');
             }
 
-            const newMsg = {
-                channelId: this.currentChannelId,
-                senderName: this.currentUser ? this.currentUser.name : 'Unknown',
-                senderId: this.currentUser ? this.currentUser.id : 'unknown',
-                role: this.currentUser ? this.currentUser.role : 'MEMBER',
-                content: content,
-                timestamp: new Date().toISOString(),
-                attachment: this.activeChatAttachment,
-                readBy: { [this.currentUser ? this.currentUser.id : 'unknown']: true }
-            };
+            // Generate link attachment if links are present
+            let linkAttachment = null;
+            if (hasLinks) {
+                const validLinks = this.activeChatLinks.filter(l => l.url && l.url.trim() !== '');
+                // Auto validate the link URLs if they didn't click save
+                for (let l of validLinks) {
+                    const url = l.url.trim();
+                    if (!/^https?:\/\//i.test(url)) {
+                        alert(`❌ 주소는 http:// 또는 https://로 시작해야 합니다: ${url}`);
+                        this.isSendingMessage = false;
+                        if (submitBtn) {
+                            submitBtn.disabled = false;
+                            submitBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+                        }
+                        return;
+                    }
+                }
+
+                if (validLinks.length === 1) {
+                    linkAttachment = {
+                        name: validLinks[0].title || validLinks[0].url,
+                        type: 'text/url',
+                        data: validLinks[0].url,
+                        size: validLinks[0].url.length
+                    };
+                } else if (validLinks.length > 1) {
+                    linkAttachment = {
+                        name: '공유 링크 목록',
+                        type: 'text/urls',
+                        links: validLinks.map(l => ({ name: l.title || l.url, url: l.url })),
+                        size: JSON.stringify(validLinks).length
+                    };
+                }
+            }
+
+            let newMsg = null;
+            let linkMsg = null;
+
+            if (hasAttachment) {
+                newMsg = {
+                    channelId: this.currentChannelId,
+                    senderName: this.currentUser ? this.currentUser.name : 'Unknown',
+                    senderId: this.currentUser ? this.currentUser.id : 'unknown',
+                    role: this.currentUser ? this.currentUser.role : 'MEMBER',
+                    content: content,
+                    timestamp: new Date().toISOString(),
+                    attachment: this.activeChatAttachment,
+                    readBy: { [this.currentUser ? this.currentUser.id : 'unknown']: true }
+                };
+                if (linkAttachment) {
+                    linkMsg = {
+                        channelId: this.currentChannelId,
+                        senderName: this.currentUser ? this.currentUser.name : 'Unknown',
+                        senderId: this.currentUser ? this.currentUser.id : 'unknown',
+                        role: this.currentUser ? this.currentUser.role : 'MEMBER',
+                        content: linkAttachment.type === 'text/url' ? `[공유 링크] ${linkAttachment.name}` : '[공유 링크 목록]',
+                        timestamp: new Date(Date.now() + 50).toISOString(),
+                        attachment: linkAttachment,
+                        readBy: { [this.currentUser ? this.currentUser.id : 'unknown']: true }
+                    };
+                }
+            } else if (linkAttachment) {
+                newMsg = {
+                    channelId: this.currentChannelId,
+                    senderName: this.currentUser ? this.currentUser.name : 'Unknown',
+                    senderId: this.currentUser ? this.currentUser.id : 'unknown',
+                    role: this.currentUser ? this.currentUser.role : 'MEMBER',
+                    content: content || (linkAttachment.type === 'text/url' ? `[공유 링크] ${linkAttachment.name}` : '[공유 링크 목록]'),
+                    timestamp: new Date().toISOString(),
+                    attachment: linkAttachment,
+                    readBy: { [this.currentUser ? this.currentUser.id : 'unknown']: true }
+                };
+            } else {
+                newMsg = {
+                    channelId: this.currentChannelId,
+                    senderName: this.currentUser ? this.currentUser.name : 'Unknown',
+                    senderId: this.currentUser ? this.currentUser.id : 'unknown',
+                    role: this.currentUser ? this.currentUser.role : 'MEMBER',
+                    content: content,
+                    timestamp: new Date().toISOString(),
+                    attachment: null,
+                    readBy: { [this.currentUser ? this.currentUser.id : 'unknown']: true }
+                };
+            }
 
             // Clear input and attachment state immediately to give fast feedback and prevent double clicks
             this.chatInput.value = '';
+            if (this.chatInput.tagName === 'TEXTAREA') {
+                this.chatInput.style.height = 'auto';
+            }
             this.cancelChatAttachment();
+            this.cancelChatLinkAttachment();
 
             const unlock = () => {
                 // Debounce unlocking for 500ms to guarantee no double-send on extremely fast responses
@@ -1591,13 +1825,23 @@ class RocketLabApp {
             };
 
             if (this.isFirebaseConnected && this.fbRef) {
-                this.fbRef.child('messages').push(newMsg)
+                const p1 = this.fbRef.child('messages').push(newMsg);
+                const promises = [p1];
+                if (linkMsg) {
+                    const p2 = this.fbRef.child('messages').push(linkMsg);
+                    promises.push(p2);
+                }
+                Promise.all(promises)
                     .then(() => unlock())
                     .catch(err => {
                         console.error("Firebase RTDB send error:", err);
                         const messages = JSON.parse(localStorage.getItem('rocket_messages') || '[]');
                         newMsg.id = Date.now() + '';
                         messages.push(newMsg);
+                        if (linkMsg) {
+                            linkMsg.id = (Date.now() + 10) + '';
+                            messages.push(linkMsg);
+                        }
                         localStorage.setItem('rocket_messages', JSON.stringify(messages));
                         this.renderChatMessages();
                         unlock();
@@ -1606,6 +1850,10 @@ class RocketLabApp {
                 const messages = JSON.parse(localStorage.getItem('rocket_messages') || '[]');
                 newMsg.id = Date.now() + '';
                 messages.push(newMsg);
+                if (linkMsg) {
+                    linkMsg.id = (Date.now() + 10) + '';
+                    messages.push(linkMsg);
+                }
                 localStorage.setItem('rocket_messages', JSON.stringify(messages));
                 this.renderChatMessages();
                 unlock();
@@ -1696,7 +1944,11 @@ class RocketLabApp {
 
     resetChannels() {
         if (confirm('채널 목록을 기본값으로 원복하시겠습니까?')) {
+            if (this.explicitlyUnreadMessages) {
+                this.explicitlyUnreadMessages.clear();
+            }
             this.currentChannelId = 'general';
+            this.markChannelMessagesAsRead(this.currentChannelId);
             this.renderChannelsList();
             this.renderChatMessages();
         }
@@ -2044,6 +2296,7 @@ class RocketLabApp {
 
     // 3D SIMULATOR RUNNER MODULE
     loadActiveSimulator() {
+        document.getElementById('sim-loader-text').innerText = 'DB에서 관리자가 지정한 기본 시뮬레이터를 불러옵니다...';
         document.getElementById('sim-loader-overlay').classList.remove('hidden');
         
         const tx = this.db.transaction('simulators', 'readonly');
@@ -2057,7 +2310,24 @@ class RocketLabApp {
                 document.getElementById('sim-active-badge').innerText = `Active: ${res.name}`;
                 this.runSimulatorIframe(res.content);
             } else {
-                // If no active, load default
+                // No active user simulator. Check admin config from Firebase
+                let config = null;
+                try {
+                    config = JSON.parse(localStorage.getItem('rocket_simulator_config'));
+                } catch (err) {}
+
+                if (config) {
+                    if (config.type === 'url' && config.url) {
+                        document.getElementById('sim-active-badge').innerText = `Active: Admin Redirect`;
+                        this.runSimulatorUrl(config.url);
+                        return;
+                    } else if (config.type === 'html' && config.html) {
+                        document.getElementById('sim-active-badge').innerText = `Active: Admin Custom HTML`;
+                        this.runSimulatorIframe(config.html);
+                        return;
+                    }
+                }
+
                 this.loadDefaultSimulator();
             }
         };
@@ -2088,6 +2358,15 @@ class RocketLabApp {
         const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
         const url = URL.createObjectURL(blob);
         
+        const iframe = document.getElementById('simulator-iframe');
+        iframe.src = url;
+        
+        iframe.onload = () => {
+            document.getElementById('sim-loader-overlay').classList.add('hidden');
+        };
+    }
+
+    runSimulatorUrl(url) {
         const iframe = document.getElementById('simulator-iframe');
         iframe.src = url;
         
@@ -2165,6 +2444,125 @@ class RocketLabApp {
             this.switchTab('simulator');
             alert(`🎮 채팅방에서 공유한 시뮬레이터 '${name}'를 구동합니다.`);
         };
+    }
+
+    // ADMIN SIMULATOR CONFIG METHODS
+    toggleAdminSimTypeInputs() {
+        const type = document.getElementById('admin-sim-type').value;
+        const urlWrap = document.getElementById('admin-sim-url-wrapper');
+        const fileWrap = document.getElementById('admin-sim-file-wrapper');
+        const htmlWrap = document.getElementById('admin-sim-html-wrapper');
+
+        if (type === 'url') {
+            urlWrap.classList.remove('hidden');
+            fileWrap.classList.add('hidden');
+            htmlWrap.classList.add('hidden');
+        } else {
+            urlWrap.classList.add('hidden');
+            fileWrap.classList.remove('hidden');
+            htmlWrap.classList.remove('hidden');
+        }
+    }
+
+    handleAdminSimFileUpload(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (evt) => {
+            document.getElementById('admin-sim-html-content').value = evt.target.result;
+            alert(`📄 HTML 파일 '${file.name}'의 코드가 성공적으로 읽혔습니다.`);
+        };
+        reader.readAsText(file);
+    }
+
+    async saveAdminSimulatorConfig() {
+        if (!this.currentUser || this.currentUser.role !== 'ADMIN') {
+            alert('❌ 권한이 없습니다.');
+            return;
+        }
+
+        const type = document.getElementById('admin-sim-type').value;
+        const url = document.getElementById('admin-sim-url').value.trim();
+        const html = document.getElementById('admin-sim-html-content').value.trim();
+
+        if (type === 'url' && !url) {
+            alert('❌ 리다이렉트 URL 주소를 입력해 주세요.');
+            return;
+        }
+        if (type === 'html' && !html) {
+            alert('❌ HTML 코드를 기입하거나 업로드해 주세요.');
+            return;
+        }
+
+        const config = {
+            type: type,
+            url: type === 'url' ? url : '',
+            html: type === 'html' ? html : '',
+            name: type === 'url' ? 'Admin URL Simulator' : 'Admin HTML Simulator',
+            updatedBy: this.currentUser.name
+        };
+
+        if (this.isFirebaseConnected && this.fbRef) {
+            try {
+                await this.fbRef.child('simulator_config').set(config);
+            } catch (err) {
+                console.error('Failed to save simulator config to Firebase:', err);
+                alert('❌ 실시간 데이터베이스 저장 실패. 인터넷 연결을 확인해 주세요.');
+                return;
+            }
+        }
+
+        localStorage.setItem('rocket_simulator_config', JSON.stringify(config));
+        alert('🎮 기본 시뮬레이터 설정이 성공적으로 저장되어 전체 유저에게 즉시 적용되었습니다.');
+    }
+
+    async resetAdminSimulatorConfig() {
+        if (!this.currentUser || this.currentUser.role !== 'ADMIN') {
+            alert('❌ 권한이 없습니다.');
+            return;
+        }
+
+        if (this.isFirebaseConnected && this.fbRef) {
+            try {
+                await this.fbRef.child('simulator_config').remove();
+            } catch (err) {
+                console.error('Failed to reset simulator config on Firebase:', err);
+                alert('❌ 실시간 데이터베이스 초기화 실패. 인터넷 연결을 확인해 주세요.');
+                return;
+            }
+        }
+
+        localStorage.removeItem('rocket_simulator_config');
+        
+        document.getElementById('admin-sim-type').value = 'url';
+        document.getElementById('admin-sim-url').value = 'https://palrocketchat.vercel.app/rocket_simulator.html';
+        document.getElementById('admin-sim-html-content').value = '';
+        this.toggleAdminSimTypeInputs();
+
+        alert('🔄 기본 시뮬레이터 설정이 기본값(Vercel rocket_simulator.html)으로 초기화되었습니다.');
+    }
+
+    populateAdminSimulatorConfig() {
+        let config = null;
+        try {
+            config = JSON.parse(localStorage.getItem('rocket_simulator_config'));
+        } catch (e) {}
+
+        const typeSelect = document.getElementById('admin-sim-type');
+        const urlInput = document.getElementById('admin-sim-url');
+        const htmlTextarea = document.getElementById('admin-sim-html-content');
+
+        if (config) {
+            typeSelect.value = config.type || 'url';
+            urlInput.value = config.url || '';
+            htmlTextarea.value = config.html || '';
+        } else {
+            typeSelect.value = 'url';
+            urlInput.value = 'https://palrocketchat.vercel.app/rocket_simulator.html';
+            htmlTextarea.value = '';
+        }
+        this.toggleAdminSimTypeInputs();
     }
 
     // FILE & FOLDER STORAGE EXPLORER
@@ -2245,7 +2643,7 @@ class RocketLabApp {
                     const nextPath = this.currentStoragePath === '/' ? `/${item.name}` : `${this.currentStoragePath}/${item.name}`;
                     this.storageGoToFolder(nextPath);
                 } else {
-                    this.showPreviewModal(item.name, item.type, item.content);
+                    this.showPreviewModal(item.name, item.type, item.content, item.id, item.disableLinks || false);
                 }
             };
 
@@ -2653,7 +3051,7 @@ class RocketLabApp {
     }
 
     // FILE PREVIEW MODAL MODULE
-    showPreviewModal(name, type, content) {
+    showPreviewModal(name, type, content, fileId = null, disableLinks = false) {
         document.getElementById('preview-modal').classList.remove('hidden');
         document.getElementById('preview-modal').classList.add('flex');
 
@@ -2782,7 +3180,12 @@ class RocketLabApp {
             icon.className = 'fa-regular fa-file-lines text-slate-400';
             const pre = document.createElement('pre');
             pre.className = 'w-full bg-slate-950 p-4 rounded-lg font-mono text-xs text-slate-300 text-left overflow-x-auto leading-relaxed border border-slate-800 whitespace-pre-wrap';
-            pre.innerText = textContent;
+            this.renderTextWithLinks(pre, textContent, disableLinks, async (disable) => {
+                if (fileId) {
+                    await this.toggleFileLink(fileId, disable);
+                    this.showPreviewModal(name, type, content, fileId, disable);
+                }
+            });
             container.appendChild(pre);
         }
     }
@@ -3849,6 +4252,299 @@ class RocketLabApp {
         alert("⚠️ 비밀번호 변경 성공! 로그인이 해제되오니 새로운 비밀번호로 다시 로그인해 주시기 바랍니다.");
         this.logout();
         this.closeProfileModal();
+    }
+
+    // HYPERLINK AUTO-DETECTION & TOGGLE METHODS
+    renderTextWithLinks(containerElement, textContent, disableLinksFlag, onToggleLink) {
+        containerElement.innerHTML = '';
+        if (disableLinksFlag) {
+            const textSpan = document.createElement('span');
+            textSpan.innerText = textContent;
+            containerElement.appendChild(textSpan);
+            
+            const toggleBtn = document.createElement('button');
+            toggleBtn.className = 'ml-2 inline-flex items-center gap-1 bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/50 text-slate-400 hover:text-slate-200 text-[9px] px-1.5 py-0.5 rounded transition select-none font-sans align-middle';
+            toggleBtn.innerHTML = '<i class="fa-solid fa-link text-blue-400"></i><span>링크 켜기</span>';
+            toggleBtn.onclick = (e) => {
+                e.stopPropagation();
+                onToggleLink(false);
+            };
+            containerElement.appendChild(toggleBtn);
+        } else {
+            const urlRegex = /(https?:\/\/[^\s<]+)/g;
+            const parts = textContent.split(urlRegex);
+            let hasLinks = false;
+            
+            parts.forEach(part => {
+                if (/^https?:\/\/[^\s<]+$/i.test(part)) {
+                    hasLinks = true;
+                    const a = document.createElement('a');
+                    a.href = part;
+                    a.target = '_blank';
+                    a.className = 'text-blue-400 hover:text-blue-300 underline font-medium break-all';
+                    a.innerText = part;
+                    containerElement.appendChild(a);
+                } else {
+                    containerElement.appendChild(document.createTextNode(part));
+                }
+            });
+
+            if (hasLinks) {
+                const toggleBtn = document.createElement('button');
+                toggleBtn.className = 'ml-2 inline-flex items-center gap-1 bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/50 text-slate-400 hover:text-slate-200 text-[9px] px-1.5 py-0.5 rounded transition select-none font-sans align-middle';
+                toggleBtn.innerHTML = '<i class="fa-solid fa-link-slash text-rose-500"></i><span>링크 끄기</span>';
+                toggleBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    onToggleLink(true);
+                };
+                containerElement.appendChild(toggleBtn);
+            }
+        }
+    }
+
+    triggerLinkUpload() {
+        if (this.activeChatLinks.length === 0) {
+            this.activeChatLinks = [{ id: Date.now(), url: '', title: '', isEditing: true }];
+        }
+        this.renderChatLinkAttachmentList();
+    }
+
+    renderChatLinkAttachmentList() {
+        const container = document.getElementById('chat-link-attachment-container');
+        const listContainer = document.getElementById('chat-link-attachment-list');
+        if (!listContainer) return;
+
+        listContainer.innerHTML = '';
+
+        if (this.activeChatLinks.length === 0) {
+            container.classList.add('hidden');
+            return;
+        }
+
+        container.classList.remove('hidden');
+
+        this.activeChatLinks.forEach((lnk, index) => {
+            const row = document.createElement('div');
+            row.className = 'flex items-center gap-2 bg-slate-950/45 p-2 rounded-lg border border-slate-800 text-xs';
+
+            if (lnk.isEditing) {
+                // Edit Mode: render inputs
+                row.innerHTML = `
+                    <div class="flex-1 flex gap-2">
+                        <input type="text" value="${lnk.title}" placeholder="제목 (선택)" 
+                            class="flex-1 min-w-0 bg-slate-900 border border-slate-800 rounded px-2 py-1 outline-none text-slate-200 focus:border-blue-500/50"
+                            oninput="app.updateActiveLinkField(${lnk.id}, 'title', this.value)">
+                        <input type="text" value="${lnk.url}" placeholder="https://example.com" 
+                            class="flex-[2] min-w-0 bg-slate-900 border border-slate-800 rounded px-2 py-1 outline-none text-slate-200 font-mono focus:border-blue-500/50"
+                            oninput="app.updateActiveLinkField(${lnk.id}, 'url', this.value)">
+                    </div>
+                    <div class="flex items-center gap-1.5 shrink-0">
+                        <button type="button" onclick="app.toggleActiveLinkEdit(${lnk.id})" class="w-7 h-7 rounded hover:bg-slate-800 flex items-center justify-center text-emerald-400" title="완료">
+                            <i class="fa-solid fa-check"></i>
+                        </button>
+                        <button type="button" onclick="app.removeActiveLink(${lnk.id})" class="w-7 h-7 rounded hover:bg-slate-800 flex items-center justify-center text-rose-400" title="삭제">
+                            <i class="fa-solid fa-trash-can"></i>
+                        </button>
+                        <button type="button" onclick="app.addActiveLink()" class="w-7 h-7 rounded hover:bg-slate-800 flex items-center justify-center text-blue-400" title="추가">
+                            <i class="fa-solid fa-plus"></i>
+                        </button>
+                    </div>
+                `;
+            } else {
+                // View Mode: render text
+                const displayName = lnk.title ? `${lnk.title} (${lnk.url})` : lnk.url;
+                row.innerHTML = `
+                    <div class="flex-1 truncate text-slate-300 font-medium pl-1 flex items-center gap-1.5">
+                        <i class="fa-solid fa-link text-slate-500 text-[10px]"></i>
+                        <span class="truncate">${displayName}</span>
+                    </div>
+                    <div class="flex items-center gap-1.5 shrink-0">
+                        <button type="button" onclick="app.toggleActiveLinkEdit(${lnk.id})" class="w-7 h-7 rounded hover:bg-slate-800 flex items-center justify-center text-amber-400" title="수정">
+                            <i class="fa-solid fa-pencil"></i>
+                        </button>
+                        <button type="button" onclick="app.removeActiveLink(${lnk.id})" class="w-7 h-7 rounded hover:bg-slate-800 flex items-center justify-center text-rose-400" title="삭제">
+                            <i class="fa-solid fa-trash-can"></i>
+                        </button>
+                        <button type="button" onclick="app.addActiveLink()" class="w-7 h-7 rounded hover:bg-slate-800 flex items-center justify-center text-blue-400" title="추가">
+                            <i class="fa-solid fa-plus"></i>
+                        </button>
+                    </div>
+                `;
+            }
+
+            listContainer.appendChild(row);
+        });
+    }
+
+    updateActiveLinkField(id, field, value) {
+        const lnk = this.activeChatLinks.find(l => l.id === id);
+        if (lnk) {
+            lnk[field] = value;
+        }
+    }
+
+    toggleActiveLinkEdit(id) {
+        const lnk = this.activeChatLinks.find(l => l.id === id);
+        if (lnk) {
+            if (lnk.isEditing) {
+                // If switching from editing to view: validate URL
+                const url = lnk.url.trim();
+                if (!url) {
+                    alert("❌ URL 주소를 입력해 주세요.");
+                    return;
+                }
+                if (!/^https?:\/\//i.test(url)) {
+                    alert("❌ 주소는 http:// 또는 https://로 시작해야 합니다.");
+                    return;
+                }
+                lnk.url = url;
+                lnk.isEditing = false;
+            } else {
+                lnk.isEditing = true;
+            }
+            this.renderChatLinkAttachmentList();
+        }
+    }
+
+    addActiveLink() {
+        this.activeChatLinks.push({
+            id: Date.now(),
+            url: '',
+            title: '',
+            isEditing: true
+        });
+        this.renderChatLinkAttachmentList();
+    }
+
+    removeActiveLink(id) {
+        this.activeChatLinks = this.activeChatLinks.filter(l => l.id !== id);
+        this.renderChatLinkAttachmentList();
+    }
+
+    cancelChatLinkAttachment() {
+        this.activeChatLinks = [];
+        this.renderChatLinkAttachmentList();
+    }
+
+    async toggleMessageLink(msgId, disable) {
+        if (!msgId) return;
+
+        if (this.messages) {
+            const m = this.messages.find(msg => msg && msg.id === msgId);
+            if (m) {
+                m.disableLinks = disable;
+            }
+        }
+
+        try {
+            const localMsgs = JSON.parse(localStorage.getItem('rocket_messages') || '[]');
+            const m = localMsgs.find(msg => msg && msg.id === msgId);
+            if (m) {
+                m.disableLinks = disable;
+                localStorage.setItem('rocket_messages', JSON.stringify(localMsgs));
+            }
+        } catch (e) {
+            console.error("Local messages update failed:", e);
+        }
+
+        if (this.isFirebaseConnected && this.fbRef) {
+            try {
+                await this.fbRef.child('messages').child(msgId).child('disableLinks').set(disable);
+            } catch (err) {
+                console.error("Firebase message links toggle failed:", err);
+            }
+        } else {
+            this.renderChatMessages();
+        }
+    }
+
+    async toggleFileLink(fileId, disable) {
+        return new Promise((resolve) => {
+            const tx = this.db.transaction('virtualFiles', 'readwrite');
+            const store = tx.objectStore('virtualFiles');
+            store.get(fileId).onsuccess = (e) => {
+                const file = e.target.result;
+                if (file) {
+                    file.disableLinks = disable;
+                    store.put(file).onsuccess = () => {
+                        if (this.isFirebaseConnected && this.fbRef) {
+                            this.fbRef.child('files').once('value').then(snapshot => {
+                                const val = snapshot.val();
+                                let fbKey = null;
+                                if (val) {
+                                    fbKey = Object.keys(val).find(k => val[k].localId === fileId || k === fileId || val[k].id === fileId);
+                                }
+                                if (fbKey) {
+                                    this.fbRef.child('files').child(fbKey).update({
+                                        disableLinks: disable
+                                    }).then(() => resolve());
+                                } else {
+                                    resolve();
+                                }
+                            });
+                        } else {
+                            resolve();
+                        }
+                    };
+                } else {
+                    resolve();
+                }
+            };
+        });
+    }
+
+    async toggleUserMessageReadStatus(msgId) {
+        if (!this.currentUser || !msgId) return;
+
+        // Find the message in memory
+        const m = this.messages ? this.messages.find(msg => msg && msg.id === msgId) : null;
+        if (!m) return;
+
+        if (!m.readBy || typeof m.readBy !== 'object') m.readBy = {};
+        
+        const isCurrentlyRead = m.readBy[this.currentUser.id] || false;
+        
+        if (isCurrentlyRead) {
+            // Mark as UNREAD
+            this.explicitlyUnreadMessages.add(msgId);
+            delete m.readBy[this.currentUser.id];
+        } else {
+            // Mark as READ
+            this.explicitlyUnreadMessages.delete(msgId);
+            m.readBy[this.currentUser.id] = true;
+        }
+
+        // Sync with LocalStorage
+        try {
+            const localMsgs = JSON.parse(localStorage.getItem('rocket_messages') || '[]');
+            const localM = localMsgs.find(msg => msg && msg.id === msgId);
+            if (localM) {
+                if (!localM.readBy || typeof localM.readBy !== 'object') localM.readBy = {};
+                if (isCurrentlyRead) {
+                    delete localM.readBy[this.currentUser.id];
+                } else {
+                    localM.readBy[this.currentUser.id] = true;
+                }
+                localStorage.setItem('rocket_messages', JSON.stringify(localMsgs));
+            }
+        } catch (e) {
+            console.error("Failed to update local message read status:", e);
+        }
+
+        // Sync with Firebase RTDB
+        if (this.isFirebaseConnected && this.fbRef) {
+            try {
+                if (isCurrentlyRead) {
+                    await this.fbRef.child('messages').child(msgId).child('readBy').child(this.currentUser.id).remove();
+                } else {
+                    await this.fbRef.child('messages').child(msgId).child('readBy').child(this.currentUser.id).set(true);
+                }
+            } catch (err) {
+                console.error("Firebase read status toggle failed:", err);
+            }
+        } else {
+            this.renderChatMessages();
+        }
     }
 }
 
